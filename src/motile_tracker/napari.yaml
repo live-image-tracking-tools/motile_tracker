@@ -7,10 +7,10 @@ categories: ["Utilities"]
 contributions:
   commands:
     - id: motile-tracker.tracking
-      python_name: motile_tracker.motile.menus.motile_widget:MotileWidget
+      python_name: motile_tracker.menus.motile_widget:MotileWidget
       title: "Open Tracking widget"
     - id: motile-tracker.solve
-      python_name: motile_tracker.motile.backend.solve:solve
+      python_name: motile_tracker.backend.solve:solve
       title: "Run motile tracking (backend only)"
     - id: motile-tracker.Fluo_N2DL_HeLa
       python_name: motile_tracker.example_data:Fluo_N2DL_HeLa

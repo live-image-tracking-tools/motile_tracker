@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
 )
 from tqdm import tqdm
 
-from motile_tracker.motile.backend import MotileRun, get_solver_name
+from motile_tracker.backend import MotileRun, get_solver_name
 
 from .params_editor import SolverParamsEditor
 

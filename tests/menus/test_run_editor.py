@@ -6,8 +6,8 @@ import pytest
 import tracksdata as td
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 
-from motile_tracker.motile.backend import MotileRun, SolverParams
-from motile_tracker.motile.menus.run_editor import RunEditor
+from motile_tracker.backend import MotileRun, SolverParams
+from motile_tracker.menus.run_editor import RunEditor
 
 
 def test_run_editor_initialization(make_napari_viewer, segmentation_2d):

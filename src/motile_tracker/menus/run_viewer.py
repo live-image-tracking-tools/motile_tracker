@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QCollapsible, ensure_main_thread
 
-from motile_tracker.motile.backend import MotileRun
+from motile_tracker.backend import MotileRun
 
 from .params_viewer import SolverParamsViewer
 

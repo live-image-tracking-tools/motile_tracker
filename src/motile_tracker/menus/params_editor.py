@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from motile_tracker.motile.backend import SolverParams
+from motile_tracker.backend import SolverParams
 
 from .param_values import EditableParamValue
 

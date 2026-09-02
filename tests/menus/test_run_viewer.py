@@ -4,8 +4,8 @@ import pytest
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from qtpy.QtWidgets import QPushButton
 
-from motile_tracker.motile.backend import MotileRun, SolverParams
-from motile_tracker.motile.menus.run_viewer import RunViewer
+from motile_tracker.backend import MotileRun, SolverParams
+from motile_tracker.menus.run_viewer import RunViewer
 
 
 @pytest.fixture

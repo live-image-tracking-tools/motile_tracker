@@ -16,7 +16,7 @@ from superqt.utils import thread_worker
 from tracksdata.array import GraphArrayView
 
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-from motile_tracker.motile.backend import MotileRun, build_candidate_graph, solve
+from motile_tracker.backend import MotileRun, build_candidate_graph, solve
 
 from .run_editor import RunEditor
 from .run_viewer import RunViewer
