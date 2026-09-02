@@ -31,6 +31,7 @@ classifiers = [
 
 dependencies =[
     "napari>=0.6.2,<0.8.0",
+    "napari-track-edit",
     "funtracks>=2.1.0-a3,<3",
     "appdirs>=1,<2",
     "numpy>=2,<3",
@@ -42,10 +43,7 @@ dependencies =[
     "tifffile[all]>=2025.1.10",
     "tqdm>=4,<5",
     "dask[array]>=2021.10.0",
-    "fonticon-fontawesome6>=6,<7",
     "pyqtgraph>=0.13,<1",
-    "napari-orthogonal-views>=0.4.0",
-    "lxml_html_clean>=0.4,<1",
     "zarr>=2.18.7,<4",
 ]
 
@@ -100,6 +98,11 @@ conflicts = [
         {extra = "gurobi13"},
     ],
 ]
+
+[tool.uv.sources]
+# Temporary local dependency during the motile_tracker/napari-track-edit split;
+# switch to a released version once napari-track-edit is published.
+napari-track-edit = { path = "../napari-track-edit", editable = true }
 
 [tool.pytest.ini_options]
 # Benchmarks are slow and run in a dedicated CI job; exclude them from the normal

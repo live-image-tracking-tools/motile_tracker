@@ -71,7 +71,7 @@ of shape linking you want.
 
 Tracker widgets
 ***************
-Motile Tracker comes with several widgets for tracking, viewing, and editing. You can open all widgets via ``Plugins`` -> ``Motile Tracker`` -> ``Open all widgets``,
+Motile Tracker provides a tracking widget, and depends on Napari Track Edit for configuraiton of visualization and track editing. You can open all widgets via ``Plugins`` -> ``Motile Tracker`` -> ``Open all widgets``,
 or select individual from the same dropdown menu. You can optionally close or hide widgets via the close (x) button, or via right mouse-click on the 'eye' button.
 Optionally, you can float individual widgets and place them somewhere else (for example, you can move the lineage view to a secondary monitor).
 If you press the `/` key, you can hide/show all Tracker widgets.
@@ -107,82 +107,9 @@ node in the list of points.
 Deleting runs you do not want to keep viewing is a good idea, since these are stored in memory.
 Tracks that were saved in previous sessions do not appear here until you load them from disk with the ``Load`` button.
 The tracking results can also be visualized as a lineage tree.
-You can open the lineage tree widget via ``Plugins`` > ``Motile Tracker`` > ``Widget - Lineage View``.
-For more details, go to the :doc:`Tree View <tree_view>` documentation.
+You can open the lineage tree widget via ``Plugins`` > ``` > ``Widget - Lineage View``.
 
-Displaying feature measurements
-*******************************
-If you are tracking with a segmentation layer, you can select size and shape features to measure in the ``Features`` widget.
-Once selected, the measurements for these features will appear in the ``Lineage View`` (select ``Plot`` > ``Feature`` to display them), and in the ``Table`` widget.
-
-.. _save-load-vs-import-export:
-
-Saving and loading vs. importing and exporting
-**********************************************
-The ``Results List`` widget offers two different ways of getting tracks in and out
-of the application, and it is worth understanding which one you want.
-
-**Saving and loading** is for continuing your own work. The application controls the
-format, so it can make and enforce assumptions about it: tracks are always written
-as a `geff`_ store, with the metadata and attributes the application needs already
-in place. Anything you save can be loaded back into a later session and picked up
-exactly where you left off, including run-specific extras like the motile solver
-parameters. Use this while you are still working on a dataset.
-
-**Importing and exporting** is for exchanging tracks with other tools. Here the
-application cannot assume much about the format, so it supports more of them (`geff`_
-and CSV) and asks you to fill in the gaps - which column means what, how the data is
-scaled, where the segmentation lives. An export is a snapshot for another tool to read,
-not a session you can resume, and importing tracks from elsewhere requires the
-column mapping step described in :doc:`Importing externally generated tracks <view_external_tracks>`.
-
-In short: save/load round-trips within the application, import/export crosses the
-boundary to other tools.
-
-Saving tracks
--------------
-Above the results list are a ``Save directory`` field, with a ``Browse`` button, and a
-``Save filename`` field. Together these are the path that the save (floppy disk) button
-beside a set of tracks writes to; the ``.geff`` suffix is added for you and shown as a
-fixed label beside the filename. The directory starts out as an application-owned
-location (the same place the sample data is downloaded to) and the filename follows
-whichever tracks you have selected, so in the common case you can simply click save.
-
-Both fields are editable, and your edits last for the rest of the session - so if you
-point the directory somewhere else once, subsequent saves go there too. Once you have
-typed your own filename it stops following the selection, so selecting different tracks
-will not overwrite what you typed. Because names in the results list are not required to
-be unique, always check the filename before saving if you have several similarly named
-sets of tracks.
-
-Saving writes to exactly the path shown; there is no timestamped subdirectory. If
-something already exists at that path you will be asked to confirm before it is
-replaced. Note that saving a set of tracks over an existing geff store replaces the
-tracks but leaves any other files in the store alone.
-
-Loading tracks
---------------
-The dropdown menu at the bottom of the widget selects what to load, and the ``Load``
-button starts it:
-
-- ``Tracks (geff)`` - load tracks previously saved from this application. Select the
-  ``.geff`` store itself.
-- ``Motile Run`` - load a saved motile run, which restores the solver parameters into
-  the ``Run Editor`` along with the tracks. Select the ``.geff`` store the run was
-  saved to. Runs saved by older versions, which used a timestamped directory
-  containing the tracks and a separate parameters file, can still be loaded.
-- ``External tracks from CSV`` and ``External tracks from geff`` - import tracks that
-  were generated elsewhere. These open the import dialog, where you map columns to
-  attributes and optionally provide a segmentation; see
-  :doc:`Importing externally generated tracks <view_external_tracks>`.
-
-Exporting tracks
-----------------
-The export button beside a set of tracks in the results list opens the export dialog,
-where you choose ``GEFF``
-or ``CSV`` and pick the location, optionally including the (relabeled) segmentation as
-zarr or tiff. You can also export a subset of tracks from the Groups tab. Exported tracks are meant to be read by other tools: to continue working
-on them here later, save them instead.
+For more details, on the different ways to visualize and edit tracks, go to the ``napari Track Edit`_ documentation.
 
 .. _Issue #48: https://github.com/funkelab/motile_tracker/issues/48
 .. _Cell Tracking Challenge: https://celltrackingchallenge.net/
@@ -190,3 +117,5 @@ on them here later, save them instead.
 .. _zenodo: https://zenodo.org/records/13903500
 .. _geff: https://github.com/live-image-tracking-tools/geff
 .. _tutorial: https://github.com/funkelab/motile_tracker/blob/main/assets/motile-tracker_tutorial.pdf
+.. _napari Track Edit: https://github.com/live-image-tracking-tools.github.io/napari-track-edit
+
