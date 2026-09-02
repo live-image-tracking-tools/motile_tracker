@@ -1,11 +1,13 @@
 # do not put from __future__ import annotations as it breaks the injection
 
 import logging
+from pathlib import Path
 
-from funtracks.data_model import SolutionTracks
+from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.utils import ensure_unique_labels
 from napari import Viewer
 from napari.utils.notifications import show_warning
+from napari_track_edit.data_views.views_coordinator.tracks_viewer import TracksViewer
 from psygnal import Signal
 from qtpy.QtWidgets import (
     QLabel,
@@ -15,7 +17,6 @@ from qtpy.QtWidgets import (
 from superqt.utils import thread_worker
 from tracksdata.array import GraphArrayView
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 from motile_tracker.backend import MotileRun, build_candidate_graph, solve
 
 from .run_editor import RunEditor
@@ -41,6 +42,8 @@ class MotileWidget(QWidget):
         tracks_viewer = TracksViewer.get_instance(self.viewer)
         self.new_run.connect(tracks_viewer.tracks_list.add_tracks)
         tracks_viewer.tracks_list.view_tracks.connect(self.view_run)
+        tracks_viewer.tracks_list.tracks_saved.connect(self._on_tracks_saved)
+        tracks_viewer.tracks_list.tracks_loaded.connect(self._on_tracks_loaded)
 
         # Create sub-widgets and connect signals
         self.edit_run_widget = RunEditor(self.viewer)
@@ -72,6 +75,54 @@ class MotileWidget(QWidget):
             self.view_run_widget.show()
         else:
             self.view_run_widget.hide()
+
+    def _on_tracks_saved(self, tracks: Tracks, path: Path) -> None:
+        """Write motile run metadata (solver params, attrs, gaps, input points)
+        next to tracks that napari-track-edit just saved as a geff.
+
+        napari-track-edit's TracksList writes only the geff store; it has no
+        notion of MotileRun, so this is the only place motile-specific data is
+        ever saved. No-ops for tracks that are not a MotileRun.
+
+        Args:
+            tracks (Tracks): The tracks object that was just saved.
+            path (Path): The geff store it was saved to.
+        """
+        if not isinstance(tracks, MotileRun):
+            return
+        tracks.save_metadata(path)
+
+    def _on_tracks_loaded(self, tracks: Tracks, path: Path) -> None:
+        """Rewrap tracks that were loaded with motile run metadata as a MotileRun.
+
+        napari-track-edit's TracksList loads plain tracks with no notion of
+        MotileRun, so a run's solver params/gaps saved by _on_tracks_saved
+        would otherwise be silently dropped on load. If the loaded path has
+        motile run metadata, replaces the plain tracks list entry with a
+        MotileRun wrapping the same graph, so downstream code (view_run,
+        edit_run) sees it as a MotileRun again.
+
+        Args:
+            tracks (Tracks): The tracks object TracksList just loaded and added.
+            path (Path): The geff store it was loaded from.
+        """
+        if MotileRun._load_params(path) is None:
+            return
+
+        tracks_list = TracksViewer.get_instance(self.viewer).tracks_list
+        list_widget = tracks_list.tracks_list
+        for row in range(list_widget.count() - 1, -1, -1):
+            item = list_widget.item(row)
+            button = list_widget.itemWidget(item)
+            if button.tracks is tracks:
+                name = button.name.text()
+                tracks_list.remove_tracks(item)
+                break
+        else:
+            return
+
+        run = MotileRun.load_metadata(tracks, path)
+        tracks_list.add_tracks(run, name, select=True)
 
     def edit_run(self, run: MotileRun | None):
         """Create or edit a new run in the run editor. Also removes solution layers

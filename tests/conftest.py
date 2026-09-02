@@ -5,42 +5,7 @@ from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from tracksdata.nodes._mask import Mask
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-
-
-@pytest.fixture
-def click_node():
-    """Return a helper that selects a node by simulating a layer click.
-
-    Prefers the TrackLabels path when a seg layer exists, because that is
-    the realistic path that produces np.int64 node IDs (via layer.get_value()
-    on a numpy image array). When no seg layer is present, falls back to
-    adding np.int64 directly so the type is still realistic.
-
-    This ensures operations like create_edge() are tested with the same types
-    they receive in the real UI, catching bugs like tracksdata's in_degree()
-    failing on np.int64.
-
-    Usage::
-
-        click_node(tracks_viewer, node_id)               # select only this node
-        click_node(tracks_viewer, node_id, append=True)  # shift-click (append)
-    """
-
-    class _Event:
-        def __init__(self, append):
-            self.modifiers = ["Shift"] if append else []
-
-    def _click(tracks_viewer, node_id, append=False):
-        seg_layer = tracks_viewer.tracking_layers.seg_layer
-        if seg_layer is not None:
-            # Realistic path: Labels layer returns np.int64 from image pixel values
-            seg_layer.process_click(_Event(append), np.int64(node_id))
-        else:
-            # No seg layer: node_id comes from graph.node_ids() which returns Python int
-            tracks_viewer.selected_nodes.add(node_id, append)
-
-    return _click
+from napari_track_edit.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
@@ -203,125 +168,9 @@ def graph_3d() -> td.graph.GraphView:
 
 
 @pytest.fixture
-def graph_3d_without_segmentation(graph_3d: td.graph.GraphView) -> td.graph.GraphView:
-    """Return a copy of graph_3d without segmentation-related node attributes."""
-    graph_without_seg = graph_3d.detach().filter().subgraph()
-    graph_without_seg.remove_node_attr_key(td.DEFAULT_ATTR_KEYS.MASK)
-    graph_without_seg.remove_node_attr_key(td.DEFAULT_ATTR_KEYS.BBOX)
-    return graph_without_seg
-
-
-@pytest.fixture
-def graph_2d_without_segmentation(graph_2d: td.graph.GraphView) -> td.graph.GraphView:
-    """Return a copy of graph_2d without segmentation-related node attributes."""
-    graph_without_seg = graph_2d.detach().filter().subgraph()
-    graph_without_seg.remove_node_attr_key(td.DEFAULT_ATTR_KEYS.MASK)
-    graph_without_seg.remove_node_attr_key(td.DEFAULT_ATTR_KEYS.BBOX)
-    graph_without_seg.remove_edge_attr_key("iou")
-    return graph_without_seg
-
-
-@pytest.fixture
-def graph_3d_with_division() -> td.graph.GraphView:
-    """3D+time graph (ndim=4) with 4 nodes and a division event (node 2 splits into 3 and 4).
-
-    Nodes include mask/bbox attributes (frame shape 100x100x100, 5 timepoints).
-    """
-    graph = create_empty_graphview_graph(
-        node_attributes=[
-            "pos",
-            "area",
-            td.DEFAULT_ATTR_KEYS.MASK,
-            td.DEFAULT_ATTR_KEYS.BBOX,
-        ],
-        ndim=4,
-    )
-    bboxes = [
-        [45, 45, 45, 55, 55, 55],  # node 1, t=0
-        [15, 45, 75, 25, 55, 85],  # node 2, t=1
-        [55, 45, 40, 65, 55, 50],  # node 3, t=2
-        [35, 65, 55, 45, 75, 65],  # node 4, t=2
-    ]
-    graph.bulk_add_nodes(
-        nodes=[
-            {
-                "t": 0,
-                "pos": [50.0, 50.0, 50.0],
-                "area": 1000.0,
-                td.DEFAULT_ATTR_KEYS.MASK: _make_mask(bboxes[0]),
-                td.DEFAULT_ATTR_KEYS.BBOX: np.array(bboxes[0], dtype=np.int64),
-                "solution": True,
-            },
-            {
-                "t": 1,
-                "pos": [20.0, 50.0, 80.0],
-                "area": 1000.0,
-                td.DEFAULT_ATTR_KEYS.MASK: _make_mask(bboxes[1]),
-                td.DEFAULT_ATTR_KEYS.BBOX: np.array(bboxes[1], dtype=np.int64),
-                "solution": True,
-            },
-            {
-                "t": 2,
-                "pos": [60.0, 50.0, 45.0],
-                "area": 1000.0,
-                td.DEFAULT_ATTR_KEYS.MASK: _make_mask(bboxes[2]),
-                td.DEFAULT_ATTR_KEYS.BBOX: np.array(bboxes[2], dtype=np.int64),
-                "solution": True,
-            },
-            {
-                "t": 2,
-                "pos": [40.0, 70.0, 60.0],
-                "area": 1000.0,
-                td.DEFAULT_ATTR_KEYS.MASK: _make_mask(bboxes[3]),
-                td.DEFAULT_ATTR_KEYS.BBOX: np.array(bboxes[3], dtype=np.int64),
-                "solution": True,
-            },
-        ],
-        indices=[1, 2, 3, 4],
-    )
-    graph.bulk_add_edges(
-        [
-            {"source_id": 1, "target_id": 2, "solution": True},
-            {"source_id": 2, "target_id": 3, "solution": True},
-            {"source_id": 2, "target_id": 4, "solution": True},
-        ]
-    )
-    graph._update_metadata(shape=(5, 100, 100, 100))
-    return graph
-
-
-@pytest.fixture
 def solution_tracks_2d(graph_2d) -> SolutionTracks:
     """Return a SolutionTracks object wrapping graph_2d."""
     return SolutionTracks(graph=graph_2d, ndim=3, time_attr="t")
-
-
-@pytest.fixture
-def solution_tracks_3d(graph_3d) -> SolutionTracks:
-    """Return a SolutionTracks object wrapping graph_3d."""
-    return SolutionTracks(graph=graph_3d, ndim=4, time_attr="t")
-
-
-@pytest.fixture
-def solution_tracks_3d_with_division(graph_3d_with_division) -> SolutionTracks:
-    """Return a SolutionTracks object wrapping graph_3d_with_division."""
-    return SolutionTracks(graph=graph_3d_with_division, ndim=4, time_attr="t")
-
-
-@pytest.fixture
-def solution_tracks_2d_without_segmentation(
-    graph_2d_without_segmentation,
-) -> SolutionTracks:
-    """Return a SolutionTracks object wrapping graph_2d_without_segmentation."""
-    return SolutionTracks(graph=graph_2d_without_segmentation, ndim=3, time_attr="t")
-
-
-@pytest.fixture
-def solution_tracks_3d_without_segmentation(
-    graph_3d_without_segmentation,
-) -> SolutionTracks:
-    """Return a SolutionTracks object wrapping graph_3d_without_segmentation."""
-    return SolutionTracks(graph=graph_3d_without_segmentation, ndim=4, time_attr="t")
 
 
 @pytest.fixture

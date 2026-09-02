@@ -1,52 +1,33 @@
 import warnings
 
 import numpy as np
+from funtracks.import_export import import_from_geff, write_to_geff
 
 from motile_tracker.backend import MotileRun, SolverParams
 
 
-def test_geff_path_finds_saved_geff(tmp_path, graph_2d):
-    """A run saved by the current version is itself the geff store."""
-    run = MotileRun(graph=graph_2d, run_name="test", solver_params=SolverParams())
-    run_dir = run.save(tmp_path / "my_run.geff")
-
-    geff = MotileRun.geff_path(run_dir)
-    assert geff == run_dir
-    assert geff.exists()
-
-
-def test_geff_path_finds_nested_tracks_geff(tmp_path):
-    """Runs saved by the previous version nested the graph in tracks.geff."""
-    run_dir = tmp_path / "run"
-    (run_dir / "tracks.geff").mkdir(parents=True)
-
-    assert MotileRun.geff_path(run_dir) == run_dir / "tracks.geff"
-
-
-def test_save_writes_params_inside_the_geff(tmp_path, graph_2d):
+def test_save_metadata_writes_params_inside_the_geff(tmp_path, graph_2d):
     """Solver params live inside the store, not beside it."""
     run = MotileRun(graph=graph_2d, run_name="test", solver_params=SolverParams())
-    run_dir = run.save(tmp_path / "my_run.geff")
+    path = tmp_path / "my_run.geff"
+    write_to_geff(run, path, overwrite=True)
 
-    assert (run_dir / "solver_params.json").exists()
-    assert (run_dir / "attrs.json").exists()
-    assert (run_dir / "nodes").exists()
+    run.save_metadata(path)
+
+    assert (path / "solver_params.json").exists()
+    assert (path / "attrs.json").exists()
 
 
-def test_resave_is_quiet(tmp_path, graph_2d):
-    """Overwriting a run must not warn about its own files.
-
-    The run keeps solver params, attrs, gaps and input points inside the geff
-    store. Zarr walks the directory while the geff is being replaced and warns
-    once per file it does not recognise, which is expected and not actionable.
-    """
+def test_resave_metadata_is_quiet(tmp_path, graph_2d):
+    """Overwriting a run's metadata must not warn about its own files."""
     run = MotileRun(graph=graph_2d, run_name="test", solver_params=SolverParams())
     path = tmp_path / "my_run.geff"
-    run.save(path)
+    write_to_geff(run, path, overwrite=True)
+    run.save_metadata(path)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        run.save(path)
+        run.save_metadata(path)
 
     unrecognized = [
         w for w in caught if "not recognized as a component" in str(w.message)
@@ -56,61 +37,50 @@ def test_resave_is_quiet(tmp_path, graph_2d):
     assert non_geff == []
 
 
-def test_resave_preserves_params(tmp_path, graph_2d):
-    """Writing a geff only replaces geff-controlled groups, so the run's own
-    files survive being saved over."""
+def test_resave_metadata_preserves_params(tmp_path, graph_2d):
+    """Re-saving metadata over itself keeps the params readable."""
     run = MotileRun(graph=graph_2d, run_name="test", solver_params=SolverParams())
     path = tmp_path / "my_run.geff"
-    run.save(path)
-    run.save(path)
+    write_to_geff(run, path, overwrite=True)
+    run.save_metadata(path)
+    run.save_metadata(path)
 
     assert (path / "solver_params.json").exists()
-    assert MotileRun.load(path).solver_params == run.solver_params
+    tracks = import_from_geff(path)
+    assert MotileRun.load_metadata(tracks, path).solver_params == run.solver_params
 
 
-def test_geff_path_falls_back_to_tracks_dir(tmp_path):
-    """Intermediate-format runs stored the graph in a 'tracks' zarr."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / "tracks").mkdir()
-
-    assert MotileRun.geff_path(run_dir) == run_dir / "tracks"
-
-
-def test_geff_path_none_for_v1_run(tmp_path):
-    """v1 runs stored the graph as graph.json, so there is no geff to report."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / "graph.json").write_text("{}")
-
-    assert MotileRun.geff_path(run_dir) is None
-
-
-def test_load_run_dir_renamed_to_non_timestamp(tmp_path, graph_2d):
-    """A run directory the user renamed must still load.
+def test_load_metadata_run_dir_renamed_to_non_timestamp(tmp_path, graph_2d):
+    """A run directory the user renamed must still load its metadata.
 
     The name and time come from the attrs file, so they survive a rename that
     _unpack_id could not parse.
     """
     run = MotileRun(graph=graph_2d, run_name="my_run", solver_params=SolverParams())
-    run_dir = run.save(tmp_path / "my_run.geff")
-    renamed = run_dir.rename(tmp_path / "not_a_timestamp")
+    path = tmp_path / "my_run.geff"
+    write_to_geff(run, path, overwrite=True)
+    run.save_metadata(path)
+    renamed = path.rename(tmp_path / "not_a_timestamp")
 
-    loaded = MotileRun.load(renamed)
+    tracks = import_from_geff(renamed)
+    loaded = MotileRun.load_metadata(tracks, renamed)
 
     assert loaded.run_name == "my_run"
     assert loaded.time == run.time
 
 
-def test_load_falls_back_to_unpack_id_without_attrs(tmp_path, graph_2d):
+def test_load_metadata_falls_back_to_unpack_id_without_attrs(tmp_path, graph_2d):
     """Runs saved before the name/time were written to attrs still load by
     unpacking the timestamped directory name."""
     run = MotileRun(graph=graph_2d, run_name="test", solver_params=SolverParams())
     # reproduce the old layout: a directory named by _make_id
-    run_dir = run.save(tmp_path / run._make_id())
-    (run_dir / "attrs.json").unlink()
+    path = tmp_path / run._make_id()
+    write_to_geff(run, path, overwrite=True)
+    run.save_metadata(path)
+    (path / "attrs.json").unlink()
 
-    loaded = MotileRun.load(run_dir)
+    tracks = import_from_geff(path)
+    loaded = MotileRun.load_metadata(tracks, path)
 
     assert loaded.run_name == "test"
     # the directory-name timestamp only has second granularity
@@ -126,7 +96,7 @@ def test_resolve_name_and_time_falls_back_to_dir_stem(tmp_path):
     assert time is None
 
 
-def test_save_load(tmp_path, graph_2d):
+def test_save_load_metadata(tmp_path, graph_2d):
     run_name = "test"
     scale = [1.0, 2.0, 3.0]
     run = MotileRun(
@@ -135,8 +105,13 @@ def test_save_load(tmp_path, graph_2d):
         solver_params=SolverParams(),
         scale=scale,
     )
-    path = run.save(tmp_path / "test.geff")
-    newrun = MotileRun.load(path)
+    path = tmp_path / "test.geff"
+    write_to_geff(run, path, overwrite=True)
+    run.save_metadata(path)
+
+    tracks = import_from_geff(path)
+    newrun = MotileRun.load_metadata(tracks, path)
+
     assert set(run.graph.node_ids()) == set(newrun.graph.node_ids())
     assert {tuple(e) for e in run.graph.edge_list()} == {
         tuple(e) for e in newrun.graph.edge_list()
