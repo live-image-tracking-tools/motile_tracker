@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from funtracks.data_model import SolutionTracks, Tracks
+from funtracks.data_model import Tracks
 from funtracks.utils import ensure_unique_labels
 from napari import Viewer
 from napari.utils.notifications import show_warning
@@ -34,7 +34,7 @@ class MotileWidget(QWidget):
     # A signal for passing events from the motile solver to the run view widget
     # To provide updates on progress of the solver
     solver_update = Signal()
-    new_run = Signal(SolutionTracks, str)
+    new_run = Signal(Tracks, str)
 
     def __init__(self, viewer: Viewer):
         super().__init__()
@@ -62,7 +62,7 @@ class MotileWidget(QWidget):
         main_layout.addStretch()
         self.setLayout(main_layout)
 
-    def view_run(self, tracks: SolutionTracks) -> None:
+    def view_run(self, tracks: Tracks) -> None:
         """Populates the run viewer with the output
         of the provided run.
 
@@ -206,11 +206,14 @@ class MotileWidget(QWidget):
             scale=run.scale,
             ndim=run.ndim,
         )
-        if "mask" in run.graph.node_attr_keys():
-            seg_shape = run.graph.metadata.get("shape")
+        if "mask" in run.graph_solution.node_attr_keys():
+            seg_shape = run.graph_solution.metadata.get("shape")
             if seg_shape is not None:
                 run.segmentation = GraphArrayView(
-                    graph=run.graph, shape=seg_shape, attr_key="node_id", offset=0
+                    graph=run.graph_solution,
+                    shape=seg_shape,
+                    attr_key="node_id",
+                    offset=0,
                 )
 
         if run.segmentation is not None:
@@ -218,7 +221,7 @@ class MotileWidget(QWidget):
             # because compute_graph_from_seg computes area during node extraction.
             run.enable_features(["area"], recompute=False)
 
-        if run.graph.num_nodes() == 0:
+        if run.graph_solution.num_nodes() == 0:
             show_warning(
                 "No tracks found - try making your edge selection value more negative"
             )

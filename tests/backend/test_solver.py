@@ -51,6 +51,35 @@ def test_solve_chunked(segmentation_3d):
     }
 
 
+def test_solve_chunked_multiple_windows_no_boundary_discontinuity():
+    """A single track spanning many windows should stay fully connected.
+
+    Regression test: edges whose source frame was the last pinned frame of
+    the previous window (e.g. source in [window_start, window_start +
+    overlap_size)) were being dropped at every window boundary, because the
+    aggregation step filtered edges by source time instead of target time.
+    """
+    n_frames = 12
+    points = np.array([[t, 10.0 + t, 10.0, 10.0] for t in range(n_frames)])
+
+    params_full = SolverParams()
+    params_full.appear_cost = None
+    params_full.iou_cost = None
+    full_solution = solve(params_full, points)
+
+    params_chunked = SolverParams()
+    params_chunked.appear_cost = None
+    params_chunked.iou_cost = None
+    params_chunked.window_size = 4
+    params_chunked.overlap_size = 2
+    chunked_solution = solve(params_chunked, points)
+
+    assert set(full_solution.node_ids()) == set(chunked_solution.node_ids())
+    assert {tuple(e) for e in full_solution.edge_list()} == {
+        tuple(e) for e in chunked_solution.edge_list()
+    }
+
+
 def test_solve_chunked_overlap_required():
     """Test that overlap_size must be at least 1."""
     params = SolverParams()

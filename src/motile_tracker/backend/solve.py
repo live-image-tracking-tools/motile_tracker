@@ -357,6 +357,14 @@ def _solve_chunked(
         overlap_size,
     )
 
+    # Ensure the PIN_ATTR schema exists before any window subgraph is built. A
+    # GraphView's attr key set is fixed at creation time, so a view created before
+    # this key exists on cand_graph would never see pin values written to it later.
+    if PIN_ATTR not in cand_graph.node_attr_keys():
+        cand_graph.add_node_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
+    if PIN_ATTR not in cand_graph.edge_attr_keys():
+        cand_graph.add_edge_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
+
     all_selected_nodes: set[int] = set()
     all_selected_edges: set[tuple] = set()
     window_start = min_time
@@ -374,13 +382,17 @@ def _solve_chunked(
             window_end,
         )
 
-        # Extract subgraph for this window (includes PIN_ATTR if set on cand_graph)
+        # Extract subgraph for this window (includes PIN_ATTR if set on cand_graph).
+        # mode=LIVE so pins written to cand_graph for a later window's overlap
+        # region are visible if this same window_subgraph view is read again.
         nodes_in_window = [
             n
             for n in cand_graph.node_ids()
             if window_start <= cand_graph.nodes[n]["t"] < window_end
         ]
-        window_subgraph = cand_graph.filter(node_ids=nodes_in_window).subgraph()
+        window_subgraph = cand_graph.filter(node_ids=nodes_in_window).subgraph(
+            mode=td.graph.ViewMode.LIVE
+        )
 
         # Solve this window
         window_solution = _solve_window(
@@ -406,9 +418,12 @@ def _solve_chunked(
         for nid in window_solution.node_ids():
             if from_frame is None or window_solution.nodes[nid]["t"] >= from_frame:
                 all_selected_nodes.add(nid)
+        # An edge is "owned" by this window if its target is in the newly
+        # decided region. This correctly includes the boundary edge whose
+        # source is the last pinned frame from the previous window.
         for u, v in window_solution.edge_list():
-            u_time = window_solution.nodes[u]["t"]
-            if from_frame is None or u_time >= from_frame:
+            v_time = window_solution.nodes[v]["t"]
+            if from_frame is None or v_time >= from_frame:
                 all_selected_edges.add((u, v))
 
         # Set PIN_ATTR on candidate graph for the overlap region (for next window)
@@ -433,6 +448,11 @@ def _solve_chunked(
     for u, v in list(result.edge_list()):
         if (u, v) not in all_selected_edges:
             result.remove_edge(u, v)
+    # PIN_ATTR is solving-internal bookkeeping on cand_graph; strip it from the result.
+    if PIN_ATTR in result.node_attr_keys():
+        result.remove_node_attr_key(PIN_ATTR)
+    if PIN_ATTR in result.edge_attr_keys():
+        result.remove_edge_attr_key(PIN_ATTR)
     result = result.filter().subgraph()
     logger.debug(
         "Combined solution has %d nodes, %d edges",

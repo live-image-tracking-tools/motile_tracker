@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import tracksdata as td
-from funtracks.data_model import SolutionTracks
+from funtracks.data_model import Tracks
 
 from .solver_params import SolverParams
 
@@ -20,7 +20,7 @@ ATTRS_FILENAME = "attrs.json"
 _TRACKSDATA_INTERNAL_EDGE_KEYS = frozenset({"edge_id", "source_id", "target_id"})
 
 
-class MotileRun(SolutionTracks):
+class MotileRun(Tracks):
     """An object representing a motile tracking run. Contains a name,
     parameters, time of creation, information about the solving process
     (status and list of solver gaps), and optionally the input and output
@@ -32,7 +32,7 @@ class MotileRun(SolutionTracks):
 
     def __init__(
         self,
-        graph: td.graph.GraphView,
+        graph: td.graph.BaseGraph,
         run_name: str,
         time_attr: str = "t",
         pos_attr: str | tuple[str] | list[str] = "pos",
@@ -157,12 +157,12 @@ class MotileRun(SolutionTracks):
         return run_dir
 
     @classmethod
-    def load_metadata(cls, tracks: SolutionTracks, path: str | Path) -> MotileRun:
+    def load_metadata(cls, tracks: Tracks, path: str | Path) -> MotileRun:
         """Rebuild a MotileRun by layering saved run metadata onto tracks that
         have already been loaded (e.g. via funtracks.import_export.import_from_geff).
 
         Args:
-            tracks (SolutionTracks): The tracks already loaded from `path`.
+            tracks (Tracks): The tracks already loaded from `path`.
             path (str | Path): The geff store the run's metadata was saved
                 into by :meth:`save_metadata`, alongside these tracks.
 
@@ -180,7 +180,7 @@ class MotileRun(SolutionTracks):
             # "segmentation_shape" key for runs saved by older versions.
             seg_shape = attrs.get("shape", attrs.get("segmentation_shape"))
             if seg_shape is not None:
-                tracks.graph._update_metadata(shape=tuple(seg_shape))
+                tracks.graph_full._update_metadata(shape=tuple(seg_shape))
             scale = attrs.get("scale") or tracks.scale
             time_attr = attrs.get("time_attr") or tracks.features.time_key
         else:
@@ -188,7 +188,7 @@ class MotileRun(SolutionTracks):
             time_attr = tracks.features.time_key
         gaps = cls._load_list(run_dir=run_dir, filename=GAPS_FILENAME, required=False)
         return cls(
-            graph=tracks.graph,
+            graph=tracks.graph_full,
             run_name=run_name,
             solver_params=params,
             input_points=input_points,
@@ -295,7 +295,7 @@ class MotileRun(SolutionTracks):
             directory (Path):  The directory in which to save the attributes
         """
         out_path = directory / ATTRS_FILENAME
-        seg_shape = self.graph.metadata.get("shape")
+        seg_shape = self.graph_full.metadata.get("shape")
         scale = (
             self.scale
             if not isinstance(self.scale, np.ndarray)
