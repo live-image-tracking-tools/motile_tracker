@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 import ilpy
 import numpy as np
+import polars as pl
 import tracksdata as td
 from funtracks.candidate_graph import (
     compute_graph_from_points_list,
@@ -13,19 +14,75 @@ from funtracks.candidate_graph import (
 )
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from motile import Solver, TrackGraph
-from motile.constraints import MaxChildren, MaxParents, Pin
-from motile.costs import (
-    EdgeDistanceCost,
-    EdgeSelectedCost,
-    NodeAppearCost,
-    NodeSplitCost,
-)
+from motile.constraints import MaxChildren, MaxParents
+from motile.constraints.constraint import Constraint
+from motile.costs import Appear, EdgeDistance, EdgeSelection, Split
+from motile.variables import EdgeSelected, NodeSelected
+from tracksdata.constants import DEFAULT_ATTR_KEYS
 
 from .solver_params import SolverParams
 
 logger = logging.getLogger(__name__)
 
 PIN_ATTR = "pinned"
+# tracksdata attribute storage has no null representation (add_node_attr_key's
+# default_value=None is inferred from dtype, not stored as null -- see
+# infer_default_value_from_dtype), so PIN_ATTR uses an int sentinel instead of
+# a bool: -1 means unconstrained, 0 means pinned-unselected, 1 means pinned-selected.
+PIN_UNSET = -1
+PIN_UNSELECTED = 0
+PIN_SELECTED = 1
+
+_SKIP_ATTRS = {DEFAULT_ATTR_KEYS.MASK, DEFAULT_ATTR_KEYS.BBOX}
+
+
+def graphview_to_motile_dicts(
+    cand_graph: td.graph.GraphView,
+) -> tuple[dict[int, dict], dict[tuple[int, int], dict]]:
+    """Unpack a tracksdata ``GraphView`` into plain node/edge dicts for ``motile.TrackGraph``.
+
+    ``GraphView`` is always backed by an in-memory ``rustworkx.PyDiGraph`` (regardless
+    of the root graph's backend), so this walks that graph directly instead of going
+    through tracksdata's polars-based ``node_attrs()``/``edge_attrs()``, which is
+    dramatically slower for large candidate graphs.
+
+    Args:
+        cand_graph: The candidate graph to unpack. Node and edge attribute dicts are
+            reused by reference (not copied), matching how ``GraphView`` itself shares
+            attribute storage with an in-memory root.
+
+    Returns:
+        A tuple ``(nodes, edges)`` matching the shape expected by
+        ``motile.TrackGraph.add_node``/``add_edge``:
+
+        - ``nodes``: mapping from node id to its attribute dict.
+        - ``edges``: mapping from ``(source_id, target_id)`` to its attribute dict.
+    """
+    rx_graph = cand_graph.rx_graph
+    node_ids = cand_graph.node_ids()
+
+    nodes: dict[int, dict] = {}
+    for local_idx, node_id in zip(rx_graph.node_indices(), node_ids, strict=True):
+        attrs = rx_graph[local_idx]
+        nodes[node_id] = {k: v for k, v in attrs.items() if k not in _SKIP_ATTRS}
+
+    local_to_external = dict(zip(rx_graph.node_indices(), node_ids, strict=True))
+
+    edges: dict[tuple[int, int], dict] = {}
+    for src_local, tgt_local, attrs in rx_graph.edge_index_map().values():
+        edge_id = (local_to_external[src_local], local_to_external[tgt_local])
+        edges[edge_id] = {
+            k: v
+            for k, v in attrs.items()
+            if k
+            not in (
+                DEFAULT_ATTR_KEYS.EDGE_ID,
+                DEFAULT_ATTR_KEYS.EDGE_SOURCE,
+                DEFAULT_ATTR_KEYS.EDGE_TARGET,
+            )
+        }
+
+    return nodes, edges
 
 
 def solve(
@@ -394,7 +451,8 @@ def _set_pinning_on_graph(
     """Set PIN_ATTR on candidate graph nodes/edges in the overlap region.
 
     For all nodes and edges in the overlap region [overlap_start, overlap_end),
-    sets PIN_ATTR to True if selected in the solution, False if not selected.
+    sets PIN_ATTR to PIN_SELECTED if selected in the solution, PIN_UNSELECTED
+    if not selected. Everything outside the overlap region stays PIN_UNSET.
 
     Args:
         cand_graph: The full candidate graph to modify in place.
@@ -402,16 +460,14 @@ def _set_pinning_on_graph(
         overlap_start: Start frame of overlap region (inclusive).
         overlap_end: End frame of overlap region (exclusive).
     """
-    import polars as pl
-
     solution_nodes = set(solution_graph.node_ids())
     solution_edges = {tuple(e) for e in solution_graph.edge_list()}
 
-    # Ensure PIN_ATTR columns exist in schema (default None = not pinned)
+    # Ensure PIN_ATTR columns exist in schema (default PIN_UNSET = unconstrained)
     if PIN_ATTR not in cand_graph.node_attr_keys():
-        cand_graph.add_node_attr_key(PIN_ATTR, pl.Boolean, default_value=None)
+        cand_graph.add_node_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
     if PIN_ATTR not in cand_graph.edge_attr_keys():
-        cand_graph.add_edge_attr_key(PIN_ATTR, pl.Boolean, default_value=None)
+        cand_graph.add_edge_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
 
     # Pin nodes in the overlap region
     nodes_to_pin = []
@@ -420,7 +476,9 @@ def _set_pinning_on_graph(
         node_time = cand_graph.nodes[node]["t"]
         if overlap_start <= node_time < overlap_end:
             nodes_to_pin.append(node)
-            pin_node_values.append(node in solution_nodes)
+            pin_node_values.append(
+                PIN_SELECTED if node in solution_nodes else PIN_UNSELECTED
+            )
     if nodes_to_pin:
         cand_graph.update_node_attrs(
             node_ids=nodes_to_pin, attrs={PIN_ATTR: pin_node_values}
@@ -437,14 +495,56 @@ def _set_pinning_on_graph(
             and overlap_start <= v_time < overlap_end
         ):
             edges_to_pin.append(cand_graph.edge_id(u, v))
-            pin_edge_values.append((u, v) in solution_edges)
+            pin_edge_values.append(
+                PIN_SELECTED if (u, v) in solution_edges else PIN_UNSELECTED
+            )
     if edges_to_pin:
         cand_graph.update_edge_attrs(
             edge_ids=edges_to_pin, attrs={PIN_ATTR: pin_edge_values}
         )
 
 
-_SKIP_ATTRS = {td.DEFAULT_ATTR_KEYS.MASK, td.DEFAULT_ATTR_KEYS.BBOX}
+class TernaryPin(Constraint):
+    """Like motile's Pin, but treats PIN_UNSET as unconstrained.
+
+    motile.constraints.Pin evaluates `{attribute} == True` for every node/edge
+    and only skips ones where the attribute is entirely absent (NameError).
+    Since tracksdata can't store nulls, our PIN_ATTR is always present once the
+    schema key exists, so Pin would force-unselect every node/edge that hasn't
+    actually been decided yet. This constraint instead only pins nodes/edges
+    whose attribute value is PIN_SELECTED or PIN_UNSELECTED, leaving PIN_UNSET
+    ones free for the solver to decide.
+    """
+
+    def __init__(self, attribute: str) -> None:
+        self.attribute = attribute
+
+    def instantiate(self, solver: Solver) -> list[ilpy.Constraint]:
+        select = ilpy.Constraint()
+        exclude = ilpy.Constraint()
+        n_selected = 0
+
+        for nodes_or_edges, variable_type in (
+            (solver.graph.nodes, NodeSelected),
+            (solver.graph.edges, EdgeSelected),
+        ):
+            indicator_variables = solver.get_variables(variable_type)
+            for id_, node_or_edge in nodes_or_edges.items():
+                pin_value = node_or_edge.get(self.attribute, PIN_UNSET)
+                if pin_value == PIN_SELECTED:
+                    select.set_coefficient(indicator_variables[id_], 1)
+                    n_selected += 1
+                elif pin_value == PIN_UNSELECTED:
+                    exclude.set_coefficient(indicator_variables[id_], 1)
+                # PIN_UNSET: leave unconstrained
+
+        select.set_relation(ilpy.Relation.Equal)
+        select.set_value(n_selected)
+
+        exclude.set_relation(ilpy.Relation.Equal)
+        exclude.set_value(0)
+
+        return [select, exclude]
 
 
 def construct_solver(
@@ -464,51 +564,34 @@ def construct_solver(
     """
     tg = TrackGraph(frame_attribute="t")
 
-    # Bulk-fetch node attributes (one polars scan instead of N individual scans)
-    node_df = cand_graph.node_attrs()
-    skip_cols = [c for c in node_df.columns if c in _SKIP_ATTRS]
-    if skip_cols:
-        node_df = node_df.drop(skip_cols)
-    node_id_col = td.DEFAULT_ATTR_KEYS.NODE_ID
-    for row in node_df.rows(named=True):
-        node_id = row.pop(node_id_col)
-        tg.add_node(node_id, row)
-
-    # Bulk-fetch edge attributes (one polars scan instead of N individual scans)
-    edge_df = cand_graph.edge_attrs()
-    src_col = td.DEFAULT_ATTR_KEYS.EDGE_SOURCE
-    tgt_col = td.DEFAULT_ATTR_KEYS.EDGE_TARGET
-    eid_col = td.DEFAULT_ATTR_KEYS.EDGE_ID
-    for row in edge_df.rows(named=True):
-        src = row.pop(src_col)
-        tgt = row.pop(tgt_col)
-        row.pop(eid_col)
-        tg.add_edge((src, tgt), row)
+    # Unpack directly from the GraphView's underlying in-memory rustworkx graph,
+    # avoiding the overhead of tracksdata's polars-based bulk attribute fetch.
+    nodes, edges = graphview_to_motile_dicts(cand_graph)
+    logging.info("Done creating motile track graph)")
+    tg.nodes = nodes
+    for edge_id, attrs in edges.items():
+        tg.add_edge(edge_id, attrs)
 
     solver = Solver(tg)
     solver.add_constraint(MaxChildren(solver_params.max_children))
     solver.add_constraint(MaxParents(1))
-    solver.add_constraint(Pin(PIN_ATTR))
+    solver.add_constraint(TernaryPin(PIN_ATTR))
 
-    # Using EdgeDistance instead of EdgeSelection for the constant cost because
-    # the attribute is not optional for EdgeSelection (yet)
     if solver_params.edge_selection_cost is not None:
         solver.add_cost(
-            EdgeDistanceCost(
-                weight=0,
-                position_attribute="pos",
+            EdgeSelection(
                 constant=solver_params.edge_selection_cost,
             ),
             name="edge_const",
         )
     if solver_params.appear_cost is not None:
-        solver.add_cost(NodeAppearCost(solver_params.appear_cost))
+        solver.add_cost(Appear(constant=solver_params.appear_cost))
     if solver_params.division_cost is not None:
-        solver.add_cost(NodeSplitCost(constant=solver_params.division_cost))
+        solver.add_cost(Split(constant=solver_params.division_cost))
 
     if solver_params.distance_cost is not None:
         solver.add_cost(
-            EdgeDistanceCost(
+            EdgeDistance(
                 position_attribute="pos",
                 weight=solver_params.distance_cost,
             ),
@@ -516,7 +599,7 @@ def construct_solver(
         )
     if solver_params.iou_cost is not None:
         solver.add_cost(
-            EdgeSelectedCost(
+            EdgeSelection(
                 weight=solver_params.iou_cost,
                 attribute="iou",
             ),
