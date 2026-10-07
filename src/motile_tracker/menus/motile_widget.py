@@ -1,7 +1,6 @@
 # do not put from __future__ import annotations as it breaks the injection
 
 import logging
-from pathlib import Path
 
 import numpy as np
 from funtracks.data_model import Tracks
@@ -9,7 +8,6 @@ from funtracks.utils import ensure_unique_labels
 from napari import Viewer
 from napari.utils.notifications import show_warning
 from napari_track_edit.data_views.views_coordinator.tracks_viewer import TracksViewer
-from psygnal import Signal
 from qtpy.QtWidgets import (
     QLabel,
     QVBoxLayout,
@@ -18,100 +16,76 @@ from qtpy.QtWidgets import (
 from superqt.utils import thread_worker
 from tracksdata.array import GraphArrayView
 
-from motile_tracker.backend import MotileRun, build_candidate_graph, solve
+from motile_tracker.backend import (
+    CandidateGraphParams,
+    MotileGraph,
+    SolverParams,
+    TilingParams,
+    build_candidate_graph,
+    solve,
+)
 
-from .run_editor import RunEditor
-from .run_viewer import RunViewer
+from .candidate_graph_widget import CandidateGraphWidget
+from .motile_params_widget import MotileParamsWidget
 
 logger = logging.getLogger(__name__)
 
 
 class MotileWidget(QWidget):
     """A widget that controls the backend components of the motile tracker.
-    Recieves user input about solver parameters, runs motile, and passes
-    results to the TracksViewer.
-    """
 
-    # A signal for passing events from the motile solver to the run view widget
-    # To provide updates on progress of the solver
-    solver_update = Signal()
-    new_run = Signal(Tracks, str)
+    Two independent sub-widgets: CandidateGraphWidget (edit params, build a
+    candidate graph from the selected input layer) and MotileParamsWidget
+    (edit solver/tiling params, run the solver against whatever tracks are
+    currently selected in the TracksViewer).
+    """
 
     def __init__(self, viewer: Viewer):
         super().__init__()
         self.viewer: Viewer = viewer
-        tracks_viewer = TracksViewer.get_instance(self.viewer)
-        self.new_run.connect(tracks_viewer.tracks_list.add_tracks)
-        tracks_viewer.tracks_list.view_tracks.connect(self.view_run)
-        tracks_viewer.tracks_list.tracks_saved.connect(self._on_tracks_saved)
-        tracks_viewer.tracks_list.tracks_loaded.connect(self._on_tracks_loaded)
+        self.tracks_viewer = TracksViewer.get_instance(self.viewer)
+        self.tracks_viewer.tracks_list.tracks_saved.connect(self._on_tracks_saved)
+        self.tracks_viewer.tracks_list.tracks_loaded.connect(self._on_tracks_loaded)
 
-        # Create sub-widgets and connect signals
-        self.edit_run_widget = RunEditor(self.viewer)
-        self.edit_run_widget.start_run.connect(self._generate_tracks)
-        self.edit_run_widget.build_candidate_graph.connect(self._build_candidate_graph)
+        self.candidate_graph_widget = CandidateGraphWidget(self.viewer)
+        self.candidate_graph_widget.build_candidate_graph.connect(
+            self._build_candidate_graph
+        )
 
-        self.view_run_widget = RunViewer()
-        self.view_run_widget.edit_run.connect(self.edit_run)
-        self.view_run_widget.hide()
-        self.solver_update.connect(self.view_run_widget.solver_event_update)
+        self.motile_params_widget = MotileParamsWidget(self.viewer)
+        self.motile_params_widget.run_solver.connect(self._run_solver)
 
-        # Create main layout
         main_layout = QVBoxLayout()
         main_layout.addWidget(self._title_widget())
-        main_layout.addWidget(self.view_run_widget)
-        main_layout.addWidget(self.edit_run_widget)
+        main_layout.addWidget(self.candidate_graph_widget)
+        main_layout.addWidget(self.motile_params_widget)
         main_layout.addStretch()
         self.setLayout(main_layout)
 
-    def view_run(self, tracks: Tracks) -> None:
-        """Populates the run viewer with the output
-        of the provided run.
-
-        Args:
-            run (MotileRun): The run to view
-        """
-        if isinstance(tracks, MotileRun):
-            self.view_run_widget.update_run(tracks)
-            self.edit_run_widget.hide()
-            self.view_run_widget.show()
-        else:
-            self.view_run_widget.hide()
-
-    def _on_tracks_saved(self, tracks: Tracks, path: Path) -> None:
-        """Write motile run metadata (solver params, attrs, gaps, input points)
-        next to tracks that napari-track-edit just saved as a geff.
+    def _on_tracks_saved(self, tracks: Tracks, path) -> None:
+        """Write motile run metadata (candidate graph/solver/tiling params,
+        gaps) next to tracks that napari-track-edit just saved as a geff.
 
         napari-track-edit's TracksList writes only the geff store; it has no
-        notion of MotileRun, so this is the only place motile-specific data is
-        ever saved. No-ops for tracks that are not a MotileRun.
-
-        Args:
-            tracks (Tracks): The tracks object that was just saved.
-            path (Path): The geff store it was saved to.
+        notion of MotileGraph, so this is the only place motile-specific data
+        is ever saved. No-ops for tracks that are not a MotileGraph.
         """
-        if not isinstance(tracks, MotileRun):
+        if not isinstance(tracks, MotileGraph):
             return
         tracks.save_metadata(path)
 
-    def _on_tracks_loaded(self, tracks: Tracks, path: Path) -> None:
-        """Rewrap tracks that were loaded with motile run metadata as a MotileRun.
+    def _on_tracks_loaded(self, tracks: Tracks, path) -> None:
+        """Rewrap tracks that were loaded with motile run metadata as a
+        MotileGraph, so its params/gaps are not silently dropped on load.
 
         napari-track-edit's TracksList loads plain tracks with no notion of
-        MotileRun, so a run's solver params/gaps saved by _on_tracks_saved
-        would otherwise be silently dropped on load. If the loaded path has
-        motile run metadata, replaces the plain tracks list entry with a
-        MotileRun wrapping the same graph, so downstream code (view_run,
-        edit_run) sees it as a MotileRun again.
-
-        Args:
-            tracks (Tracks): The tracks object TracksList just loaded and added.
-            path (Path): The geff store it was loaded from.
+        MotileGraph. If the loaded path has motile metadata, replaces the
+        plain tracks list entry with a MotileGraph wrapping the same graph.
         """
-        if MotileRun._load_params(path) is None:
+        if MotileGraph._load_params(path) is None:
             return
 
-        tracks_list = TracksViewer.get_instance(self.viewer).tracks_list
+        tracks_list = self.tracks_viewer.tracks_list
         list_widget = tracks_list.tracks_list
         for row in range(list_widget.count() - 1, -1, -1):
             item = list_widget.item(row)
@@ -123,228 +97,174 @@ class MotileWidget(QWidget):
         else:
             return
 
-        run = MotileRun.load_metadata(tracks, path)
+        run = MotileGraph(
+            graph=tracks.graph_full,
+            ndim=tracks.ndim,
+            scale=tracks.scale,
+            time_attr=tracks.features.time_key,
+            pos_attr=tracks.features.position_key,
+            _features=tracks.features,
+            _segmentation=tracks.segmentation,
+        )
+        run.load_metadata(path)
         tracks_list.add_tracks(run, name, select=True)
 
-    def edit_run(self, run: MotileRun | None):
-        """Create or edit a new run in the run editor. Also removes solution layers
-        from the napari viewer.
-
-        Args:
-            run (MotileRun | None): Initialize the new run with the parameters and
-                name from this run. If not provided, uses the SolverParams default
-                values.
+    def _build_candidate_graph(
+        self, input_data: np.ndarray, params: CandidateGraphParams, scale: list[float]
+    ) -> None:
+        """Called when the candidate graph widget requests a build. Starts
+        building in a separate thread to avoid blocking.
         """
-        self.view_run_widget.hide()
-        self.edit_run_widget.show()
-        if run:
-            self.edit_run_widget.new_run(run)
-
-    def _generate_tracks(self, run: MotileRun) -> None:
-        """Called when we start solving a new run. Switches from run editor to run
-        viewer and starts solving of the new run in a separate thread to avoid blocking.
-
-        Args:
-            run (MotileRun): Start solving this motile run.
-        """
-        run.status = "initializing"
-        self.view_run(run)
-        worker = self.solve_with_motile(run)
-        worker.returned.connect(self._on_solve_complete)
-        worker.start()
-
-    def _build_candidate_graph(self, run: MotileRun) -> None:
-        """Called when we start building a candidate graph for a new run.
-        Switches from run editor to run viewer and starts building the
-        candidate graph in a separate thread to avoid blocking.
-
-        Args:
-            run (MotileRun): Build a candidate graph for this motile run.
-        """
-        run.status = "initializing"
-        self.view_run(run)
-        worker = self.build_candidate_run(run)
+        worker = self.build_candidate_run(input_data, params, scale)
         worker.returned.connect(self._on_build_candidate_complete)
         worker.start()
 
     @thread_worker
-    def build_candidate_run(self, run: MotileRun) -> MotileRun:
-        """Builds the candidate graph for the given run and returns a new
-        MotileRun wrapping it (not yet solved).
-
-        Args:
-            run (MotileRun): A run with name, parameters, and input segmentation,
-                but not including the candidate graph.
-
-        Returns:
-            MotileRun: A new run with the candidate graph as its graph.
+    def build_candidate_run(
+        self,
+        input_data: np.ndarray,
+        candidate_graph_params: CandidateGraphParams,
+        scale: list[float],
+    ) -> MotileGraph:
+        """Builds the candidate graph for the given input data and returns a
+        MotileGraph wrapping it (not yet solved).
         """
-        input_data = self._get_input_data(run)
         try:
-            cand_graph = build_candidate_graph(input_data, run.solver_params, run.scale)
+            cand_graph = build_candidate_graph(input_data, candidate_graph_params, scale)
         except ValueError as e:
             if "Duplicate values found among nodes" in str(e):
-                run.input_segmentation = ensure_unique_labels(run.input_segmentation)
-                input_data = run.input_segmentation
+                input_data = ensure_unique_labels(input_data)
                 cand_graph = build_candidate_graph(
-                    input_data, run.solver_params, run.scale
+                    input_data, candidate_graph_params, scale
                 )
             else:
                 raise
 
-        return MotileRun(
+        return MotileGraph(
             graph=cand_graph,
-            run_name=run.run_name,
-            solver_params=run.solver_params,
-            input_segmentation=run.input_segmentation,
-            input_points=run.input_points,
-            time=run.time,
-            scale=run.scale,
-            ndim=run.ndim,
+            scale=scale,
+            candidate_graph_params=candidate_graph_params,
             status="candidate",
         )
 
-    def _on_build_candidate_complete(self, run: MotileRun) -> None:
-        """Called when the candidate graph building thread returns. Updates
-        the run status and tells the run viewer to update.
-
-        Args:
-            run (MotileRun): The run with the candidate graph included.
+    def _on_build_candidate_complete(self, run: MotileGraph) -> None:
+        """Called when the candidate graph building thread returns. Adds the
+        new candidate graph to the tracks list, which selects and displays it.
         """
         run.status = "candidate"
-        self.solver_update.emit()
-        self.new_run(run, run.run_name)
+        self.tracks_viewer.tracks_list.add_tracks(run, "candidate graph", select=True)
 
-    def _get_input_data(self, run: MotileRun) -> np.ndarray:
-        """Get the input segmentation or points for a run.
-
-        Args:
-            run (MotileRun): The run to get input data for.
-
-        Returns:
-            np.ndarray: The input segmentation or points.
+    def _run_solver(
+        self, solver_params: SolverParams, tiling_params: TilingParams
+    ) -> None:
+        """Called when the motile params widget requests a solve. Solves
+        whatever tracks are currently selected in the TracksViewer, in a
+        separate thread to avoid blocking.
         """
-        if run.input_segmentation is not None:
-            return run.input_segmentation
-        elif run.input_points is not None:
-            return run.input_points
-        else:
-            raise ValueError("Must have one of input segmentation or points")
+        tracks = self.tracks_viewer.tracks
+        if tracks is None:
+            show_warning("No tracks selected to solve")
+            return
+        worker = self.solve_with_motile(tracks, solver_params, tiling_params)
+        worker.returned.connect(self._on_solve_complete)
+        worker.start()
 
     @thread_worker
-    def solve_with_motile(self, run: MotileRun) -> MotileRun:
-        """Runs the solver and relabels the segmentation to match
-        the solution graph.
-        Emits: self.solver_event when the solver provides an update
-        (will be emitted from the thread, which is why it needs to be an
-        event and not just a normal function callback)
+    def solve_with_motile(
+        self,
+        tracks: Tracks,
+        solver_params: SolverParams,
+        tiling_params: TilingParams,
+    ) -> Tracks:
+        """Runs the solver on the given tracks and recomputes track ids.
 
         Args:
-            run (MotileRun): A run with name, parameters, and input segmentation,
-                and optionally an already-built candidate graph. If the run's
-                graph is not yet a candidate graph (status != "candidate"), one
-                is built first.
+            tracks: The tracks (candidate graph) to solve. Solved in place.
+            solver_params: The solver parameters to use.
+            tiling_params: The chunked/tiled solving parameters to use.
 
         Returns:
-            MotileRun: The provided run with the output graph and segmentation included.
+            Tracks: The same tracks object, now solved.
         """
-        if run.status != "candidate":
-            input_data = self._get_input_data(run)
-            try:
-                cand_graph = build_candidate_graph(
-                    input_data, run.solver_params, run.scale
-                )
-            except ValueError as e:
-                if "Duplicate values found among nodes" in str(e):
-                    run.input_segmentation = ensure_unique_labels(run.input_segmentation)
-                    input_data = run.input_segmentation
-                    cand_graph = build_candidate_graph(
-                        input_data, run.solver_params, run.scale
-                    )
-                else:
-                    raise
-            # Create a new MotileRun wrapping the candidate graph so that
-            # SolutionTracks.__init__ runs fresh and correctly assigns track IDs
-            # via _setup_core_computed_features (detecting that track_id is absent).
-            run = MotileRun(
-                graph=cand_graph,
-                run_name=run.run_name,
-                solver_params=run.solver_params,
-                input_segmentation=run.input_segmentation,
-                input_points=run.input_points,
-                time=run.time,
-                scale=run.scale,
-                ndim=run.ndim,
-                status="candidate",
-            )
+        if isinstance(tracks, MotileGraph):
+            tracks.status = "initializing"
+            tracks.solver_params = solver_params
+            tracks.tiling_params = tiling_params
 
         solve(
-            run,
-            run.solver_params,
-            lambda event_data: self._on_solver_event(run, event_data),
+            tracks,
+            solver_params,
+            tiling_params,
+            lambda event_data: self._on_solver_event(tracks, event_data),
         )
-        run.status = "done"
+
+        if isinstance(tracks, MotileGraph):
+            tracks.status = "done"
+
         # Solving replaces the graph's topology, so the tracklet/lineage ids
         # computed when the candidate graph was built are stale (or -1-sentinel
         # placeholders); recompute them from the newly solved topology.
-        run.enable_features(
-            [run.features.tracklet_key, run.features.lineage_key], recompute=True
+        tracks.enable_features(
+            [tracks.features.tracklet_key, tracks.features.lineage_key],
+            recompute=True,
         )
-        if "mask" in run.graph_solution.node_attr_keys():
-            seg_shape = run.graph_solution.metadata.get("shape")
+        if "mask" in tracks.graph_solution.node_attr_keys():
+            seg_shape = tracks.graph_solution.metadata.get("shape")
             if seg_shape is not None:
-                run.segmentation = GraphArrayView(
-                    graph=run.graph_solution,
+                tracks.segmentation = GraphArrayView(
+                    graph=tracks.graph_solution,
                     shape=seg_shape,
                     attr_key="node_id",
                     offset=0,
                 )
 
-        if run.segmentation is not None:
+        if tracks.segmentation is not None:
             # recompute=False: area values are already on the graph nodes
             # because compute_graph_from_seg computes area during node extraction.
-            run.enable_features(["area"], recompute=False)
+            tracks.enable_features(["area"], recompute=False)
 
-        if run.graph_solution.num_nodes() == 0:
+        if tracks.graph_solution.num_nodes() == 0:
             show_warning(
                 "No tracks found - try making your edge selection value more negative"
             )
-        return run
+        return tracks
 
-    def _on_solver_event(self, run: MotileRun, event_data: dict) -> None:
-        """Parse the solver event and set the run status and gap accordingly.
-        Also emits a solver_update event to tell the run viewer to update.
-        Note: This will simply tell the run viewer to refresh its plot and
-        status. If the run viewer is not viewing this run, it will refresh
-        anyways, which is pointless but not harmful.
-
-        Args:
-            run (MotileRun): The run that the solver is working on
-            event_data (dict): The solver event data from ilpy.EventData
+    def _on_solver_event(self, tracks: Tracks, event_data: dict) -> None:
+        """Parse the solver event and update status/gaps, then refresh the
+        motile params widget's progress display.
         """
+        if not isinstance(tracks, MotileGraph):
+            return
         event_type = event_data["event_type"]
-        if event_type in ["PRESOLVE", "PRESOLVEROUND"] and run.status != "presolving":
-            run.status = "presolving"
-            run.gaps = []  # try this to remove the weird initial gap for gurobi
-            self.solver_update.emit()
+        if event_type in ["PRESOLVE", "PRESOLVEROUND"] and tracks.status != "presolving":
+            tracks.status = "presolving"
+            tracks.gaps = []  # try this to remove the weird initial gap for gurobi
+            self.motile_params_widget.solver_event_update(tracks.status, tracks.gaps)
         elif event_type in ["MIPSOL", "BESTSOLFOUND"]:
-            run.status = "solving"
+            tracks.status = "solving"
             gap = event_data["gap"]
-            if run.gaps is None:
-                run.gaps = []
-            run.gaps.append(gap)
-            self.solver_update.emit()
+            if tracks.gaps is None:
+                tracks.gaps = []
+            tracks.gaps.append(gap)
+            self.motile_params_widget.solver_event_update(tracks.status, tracks.gaps)
 
-    def _on_solve_complete(self, run: MotileRun) -> None:
-        """Called when the solver thread returns. Updates the run status to done
-        and tells the run viewer to update.
-
-        Args:
-            run (MotileRun): The completed run
+    def _on_solve_complete(self, tracks: Tracks) -> None:
+        """Called when the solver thread returns. Refreshes the stats/progress
+        display and the napari layers; the tracks object was solved in place
+        so no new row is added to the tracks list.
         """
-        run.status = "done"
-        self.solver_update.emit()
-        self.new_run(run, run.run_name)
+        status = tracks.status if isinstance(tracks, MotileGraph) else "done"
+        gaps = tracks.gaps if isinstance(tracks, MotileGraph) else None
+        self.motile_params_widget.solver_event_update(status, gaps)
+        self.motile_params_widget.update_stats()
+
+        # solve() mutates tracks.graph_full/graph_solution directly rather than
+        # through the normal action-recording path, so the viewer's layers
+        # never heard about the change. Only refresh if these are still the
+        # tracks currently being viewed (the user may have switched away
+        # during the background solve).
+        if self.tracks_viewer.tracks is tracks:
+            self.tracks_viewer._refresh(refresh_view=True)
 
     def _title_widget(self) -> QWidget:
         """Create the intro paragraph widget, with links to motile docs.

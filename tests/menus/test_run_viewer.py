@@ -4,7 +4,7 @@ import pytest
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from qtpy.QtWidgets import QPushButton
 
-from motile_tracker.backend import MotileRun, SolverParams
+from motile_tracker.backend import MotileGraph, SolverParams
 from motile_tracker.menus.run_viewer import RunViewer
 
 
@@ -20,7 +20,7 @@ def run_viewer(qtbot):
 def sample_run(segmentation_2d):
     """Fixture for creating a sample MotileRun."""
 
-    return MotileRun(
+    return MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=segmentation_2d,
         run_name="test_run",
@@ -55,7 +55,7 @@ def test_update_run(run_viewer, sample_run, qtbot):
     assert "(" in title and ")" in title
 
     # Test 3: update_run emits params_widget.new_params signal
-    sample_run2 = MotileRun(
+    sample_run2 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=sample_run.input_segmentation,
         run_name="test_run2",
@@ -65,7 +65,7 @@ def test_update_run(run_viewer, sample_run, qtbot):
         run_viewer.update_run(sample_run2)
 
     # Test 4: update_run calls solver_event_update
-    sample_run3 = MotileRun(
+    sample_run3 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=sample_run.input_segmentation,
         run_name="test_run3",

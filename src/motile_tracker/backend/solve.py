@@ -5,15 +5,9 @@ import time
 from collections.abc import Callable
 
 import ilpy
-import numpy as np
 import polars as pl
 import tracksdata as td
-from funtracks.candidate_graph import (
-    compute_graph_from_points_list,
-    compute_graph_from_seg,
-)
 from funtracks.data_model import Tracks
-from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from motile import Solver, TrackGraph
 from motile.constraints import MaxChildren, MaxParents
 from motile.constraints.constraint import Constraint
@@ -21,7 +15,7 @@ from motile.costs import Appear, EdgeDistance, EdgeSelection, Split
 from motile.variables import EdgeSelected, NodeSelected
 from tracksdata.constants import DEFAULT_ATTR_KEYS
 
-from .solver_params import SolverParams
+from .solver_params import SolverParams, TilingParams
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +95,12 @@ def _reset_solution(tracks):
         )
 
 def _get_windows(
-    solver_params: SolverParams, total_time_points: int
+    tiling_params: TilingParams, total_time_points: int
 ) -> tuple[list[tuple[int, int]], bool]:
     """Compute the (start, end) sliding/chunked windows to solve.
 
     Args:
-        solver_params: Supplies window_size/overlap_size for chunked solving
+        tiling_params: Supplies window_size/overlap_size for chunked solving
             over the whole dataset.
         total_time_points: Total number of frames to cover, starting at 0.
 
@@ -119,11 +113,11 @@ def _get_windows(
     Raises:
         ValueError: If overlap_size is missing/invalid when window_size is set.
     """
-    window_size = solver_params.window_size
+    window_size = tiling_params.window_size
     if window_size is None:
         return [(0, total_time_points)], False
 
-    overlap_size = solver_params.overlap_size
+    overlap_size = tiling_params.overlap_size
     if overlap_size is None:
         raise ValueError("overlap_size is required when window_size is set")
     if overlap_size >= window_size:
@@ -142,6 +136,7 @@ def _get_windows(
 def solve(
     tracks: Tracks,
     solver_params: SolverParams,
+    tiling_params: TilingParams | None = None,
     on_solver_update: Callable | None = None,
 ) -> Tracks:
     """Get a tracking solution for the given full candidate tracks and parameters.
@@ -151,6 +146,9 @@ def solve(
             to run solving on
         solver_params (SolverParams): The solver parameters to use when
             initializing the solver
+        tiling_params (TilingParams, optional): The chunked/tiled solving
+            parameters (window_size, overlap_size). Defaults to None, which
+            solves every frame in a single window.
         on_solver_update (Callable, optional): A function that is called
             whenever the motile solver emits an event. The function should take
             a dictionary of event data, and can be used to track progress of
@@ -159,11 +157,14 @@ def solve(
     Returns:
         tracks with solution and pinning attributes set on graph_full
     """
+    if tiling_params is None:
+        tiling_params = TilingParams()
+
     graph = tracks.graph_full
 
     time_points = graph.time_points()
     total_time_points = max(time_points) + 1 if time_points else 0
-    windows, windowed = _get_windows(solver_params, total_time_points)
+    windows, windowed = _get_windows(tiling_params, total_time_points)
 
     # ensure the pin schema exists before _reset_solution writes to it
     if PIN_ATTR not in graph.node_attr_keys():
@@ -237,83 +238,6 @@ def solve(
     ).subgraph(mode=td.graph.ViewMode.LIVE)
 
     return tracks
-
-def build_candidate_graph(
-    input_data: np.ndarray,
-    solver_params: SolverParams,
-    scale: list | None = None,
-    time_offset: int = 0,
-) -> td.graph.BaseGraph:
-    """Build the candidate graph from input data.
-
-    If solver_params.single_window_start is set, input_data is sliced down to
-    just that window (single_window_size frames, or the rest of the data if
-    unset) before building, so the candidate graph only contains nodes from
-    that window — useful for interactively testing parameters on a small
-    portion of the data before running on the full dataset. Node times stay
-    absolute via time_offset.
-    """
-    single_window_start = solver_params.single_window_start
-    if single_window_start is not None:
-        max_time = (
-            input_data.shape[0] - 1
-            if input_data.ndim != 2
-            else int(input_data[:, 0].max())
-        )
-        if single_window_start > max_time:
-            raise ValueError(
-                f"single_window_start ({single_window_start}) is beyond "
-                f"last frame ({max_time})"
-            )
-        single_window_size = solver_params.single_window_size
-        window_end = (
-            max_time + 1
-            if single_window_size is None
-            else min(single_window_start + single_window_size, max_time + 1)
-        )
-        if input_data.ndim == 2:
-            row_mask = (input_data[:, 0] >= single_window_start) & (
-                input_data[:, 0] < window_end
-            )
-            input_data = input_data[row_mask]
-        else:
-            # numpy slice is a view (no copy)
-            input_data = input_data[single_window_start:window_end]
-        time_offset = single_window_start
-
-    if input_data.ndim == 2:
-        cand_graph = compute_graph_from_points_list(
-            input_data, solver_params.max_edge_distance, scale=scale
-        )
-    else:
-        cand_graph = compute_graph_from_seg(
-            input_data,
-            solver_params.max_edge_distance,
-            iou=solver_params.iou_cost is not None,
-            scale=scale,
-            t_start=time_offset,
-        )
-    logger.debug("Cand graph has %d nodes", cand_graph.num_nodes())
-
-    # A candidate graph holds every possible node/edge, not yet a solution —
-    # Tracks defaults "solution" to True (correct for wrapping an already-solved
-    # result), so it must be explicitly cleared here or graph_solution would show
-    # the entire unsolved candidate tangle.
-    if "solution" not in cand_graph.node_attr_keys():
-        cand_graph.add_node_attr_key("solution", default_value=False, dtype=pl.Boolean)
-    else:
-        cand_graph.update_node_attrs(
-            node_ids=cand_graph.node_ids(), attrs={"solution": False}
-        )
-    if "solution" not in cand_graph.edge_attr_keys():
-        cand_graph.add_edge_attr_key("solution", default_value=False, dtype=pl.Boolean)
-    else:
-        cand_graph.update_edge_attrs(
-            edge_ids=cand_graph.edge_ids(), attrs={"solution": False}
-        )
-
-    return cand_graph
-
 
 class TernaryPin(Constraint):
     """Like motile's Pin, but treats PIN_UNSET as unconstrained.
@@ -407,14 +331,6 @@ def construct_solver(
                 weight=solver_params.distance_cost,
             ),
             name="distance",
-        )
-    if solver_params.iou_cost is not None:
-        solver.add_cost(
-            EdgeSelection(
-                weight=solver_params.iou_cost,
-                attribute="iou",
-            ),
-            name="iou",
         )
     return solver
 

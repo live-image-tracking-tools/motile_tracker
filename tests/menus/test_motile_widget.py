@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 
-from motile_tracker.backend import MotileRun, SolverParams
+from motile_tracker.backend import MotileGraph, SolverParams
 from motile_tracker.menus.motile_widget import MotileWidget
 
 
@@ -46,7 +46,7 @@ def test_view_and_edit_run(make_napari_viewer, solution_tracks_2d, qtbot):
     widget.show()
 
     # view_run with MotileRun shows viewer and hides editor
-    run = MotileRun(
+    run = MotileGraph(
         graph=create_empty_graphview_graph(),
         run_name="test_run",
         solver_params=SolverParams(),
@@ -68,7 +68,7 @@ def test_view_and_edit_run(make_napari_viewer, solution_tracks_2d, qtbot):
 
     # edit_run with run loads parameters into editor
     custom_params = SolverParams(max_edge_distance=999.0)
-    run2 = MotileRun(
+    run2 = MotileGraph(
         graph=create_empty_graphview_graph(),
         run_name="test_run",
         solver_params=custom_params,
@@ -85,7 +85,7 @@ def test_generate_tracks(make_napari_viewer):
     viewer = make_napari_viewer()
     widget = MotileWidget(viewer)
 
-    run = MotileRun(
+    run = MotileGraph(
         graph=create_empty_graphview_graph(),
         run_name="test_run",
         solver_params=SolverParams(),
@@ -119,7 +119,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
     worker_fn = widget.solve_with_motile.__wrapped__
 
     # Returns a run where all nodes have track_id assigned
-    run = MotileRun(
+    run = MotileGraph(
         graph=create_empty_graphview_graph(),
         run_name="test_run",
         solver_params=SolverParams(),
@@ -137,7 +137,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         assert result.graph_solution.nodes[node]["area"] > 0
 
     # Raises ValueError without input data
-    run2 = MotileRun(
+    run2 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=None,
         run_name="test_run",
@@ -150,7 +150,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
 
     # Uses points when provided
     points_data = np.array([[0, 10, 20], [1, 30, 40]])
-    run3 = MotileRun(
+    run3 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=None,
         input_points=points_data,
@@ -173,7 +173,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         mock_solve.assert_called_once()
 
     # Shows warning for empty result
-    run4 = MotileRun(
+    run4 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=segmentation_2d,
         run_name="test_run",
@@ -196,7 +196,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
     # Relabel segmentation when there are duplicate labels
     segmentation_2d[1][10:10, 10:10] = 1  # duplicate value
 
-    run5 = MotileRun(
+    run5 = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=segmentation_2d,
         run_name="test_run",
@@ -235,7 +235,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         # pre-built candidate graph
         assert mock_solve.call_count == 1
         solved_tracks = mock_solve.call_args[0][0]
-        assert isinstance(solved_tracks, MotileRun)
+        assert isinstance(solved_tracks, MotileGraph)
         assert solved_tracks.input_segmentation is relabeled
 
 
@@ -244,7 +244,7 @@ def test_solver_events_and_completion(make_napari_viewer, qtbot):
     viewer = make_napari_viewer()
     widget = MotileWidget(viewer)
 
-    run = MotileRun(
+    run = MotileGraph(
         graph=create_empty_graphview_graph(),
         run_name="test_run",
         solver_params=SolverParams(),

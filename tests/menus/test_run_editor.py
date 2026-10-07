@@ -6,7 +6,7 @@ import pytest
 import tracksdata as td
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 
-from motile_tracker.backend import MotileRun, SolverParams
+from motile_tracker.backend import MotileGraph, SolverParams
 from motile_tracker.menus.run_editor import RunEditor
 
 
@@ -186,7 +186,7 @@ def test_signal_emission(make_napari_viewer, segmentation_2d, qtbot):
     with qtbot.waitSignal(editor.start_run, timeout=1000) as blocker:
         editor.emit_run()
     run = blocker.args[0]
-    assert isinstance(run, MotileRun)
+    assert isinstance(run, MotileGraph)
 
     # emit_run doesn't emit signal when no layer selected
     viewer2 = make_napari_viewer()
@@ -201,7 +201,7 @@ def test_new_run(make_napari_viewer, segmentation_2d, qtbot):
     editor = RunEditor(viewer)
 
     custom_params = SolverParams(max_edge_distance=999.0, max_children=5)
-    existing_run = MotileRun(
+    existing_run = MotileGraph(
         graph=create_empty_graphview_graph(),
         input_segmentation=segmentation_2d,
         run_name="existing_run",
