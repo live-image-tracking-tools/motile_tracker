@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# Node/edge feature keys that are never offered as selectable solving weights
+# (position is handled by distance_cost, not a generic attribute weight).
+_RESERVED_FEATURE_KEYS = frozenset({"t", "pos", "solution", "tracklet_id", "lineage_id"})
+
 
 class CandidateGraphParams(BaseModel):
     """The set of parameters used to build a candidate graph from input data.
@@ -97,6 +101,12 @@ class SolverParams(BaseModel):
         title="Edge Selection",
         description=r"""Cost for selecting an edge. The more negative the value, the more edges will be selected.""",
     )
+    node_selection_cost: float | None = Field(
+        None,
+        title="Node Selection",
+        description=r"""Cost for selecting a node. The more negative the value, the more nodes will be selected.""",
+        json_schema_extra={"ui_default": -20.0},
+    )
     appear_cost: float | None = Field(
         30,
         title="Appear",
@@ -114,3 +124,29 @@ If this cost is higher than the appear cost, tracks will likely never divide."""
         description=r"""Use the distance between objects as a feature for selecting edges.
 The value is multiplied by the edge distance to create a cost for selecting that edge.""",
     )
+    attribute_weights: dict[str, float] = Field(
+        default_factory=dict,
+        title="Attribute Weights",
+        description=r"""Weights for arbitrary node/edge features computed on the tracks
+(e.g. iou, or anything else added via the Features menu). Each entry adds an
+EdgeSelection cost: the feature's value is multiplied by the weight to produce a cost
+for selecting that edge. Recommended to be negative for features where a bigger value
+is a better match (e.g. IoU), positive otherwise.""",
+    )
+
+    @classmethod
+    def available_attribute_keys(cls, tracks) -> list[str]:
+        """List the node/edge feature keys on `tracks` that can be used as
+        attribute_weights entries.
+
+        Args:
+            tracks: A funtracks Tracks (or subclass) instance to inspect.
+
+        Returns:
+            list[str]: Feature keys present on tracks.graph_solution, excluding
+                internal/reserved keys (time, position, solution, track/lineage
+                ids) that are not meaningful as a generic solving weight.
+        """
+        graph = tracks.graph_solution
+        keys = set(graph.node_attr_keys()) | set(graph.edge_attr_keys())
+        return sorted(keys - _RESERVED_FEATURE_KEYS)

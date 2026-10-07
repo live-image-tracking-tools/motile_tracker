@@ -11,7 +11,7 @@ from funtracks.data_model import Tracks
 from motile import Solver, TrackGraph
 from motile.constraints import MaxChildren, MaxParents
 from motile.constraints.constraint import Constraint
-from motile.costs import Appear, EdgeDistance, EdgeSelection, Split
+from motile.costs import Appear, EdgeDistance, EdgeSelection, NodeSelection, Split
 from motile.variables import EdgeSelected, NodeSelected
 from tracksdata.constants import DEFAULT_ATTR_KEYS
 
@@ -319,6 +319,13 @@ def construct_solver(
             ),
             name="edge_const",
         )
+    if solver_params.node_selection_cost is not None:
+        solver.add_cost(
+            NodeSelection(
+                constant=solver_params.node_selection_cost,
+            ),
+            name="node_const",
+        )
     if solver_params.appear_cost is not None:
         solver.add_cost(Appear(constant=solver_params.appear_cost))
     if solver_params.division_cost is not None:
@@ -332,6 +339,30 @@ def construct_solver(
             ),
             name="distance",
         )
+
+    node_attr_keys = set(cand_graph.node_attr_keys())
+    edge_attr_keys = set(cand_graph.edge_attr_keys())
+    for attribute, weight in solver_params.attribute_weights.items():
+        is_node_attr = attribute in node_attr_keys
+        is_edge_attr = attribute in edge_attr_keys
+        if is_node_attr and is_edge_attr:
+            raise ValueError(
+                f"Attribute '{attribute}' exists as both a node and an edge "
+                "feature; cannot determine which cost to apply."
+            )
+        elif is_node_attr:
+            solver.add_cost(
+                NodeSelection(weight=weight, attribute=attribute), name=attribute
+            )
+        elif is_edge_attr:
+            solver.add_cost(
+                EdgeSelection(weight=weight, attribute=attribute), name=attribute
+            )
+        else:
+            raise ValueError(
+                f"Attribute '{attribute}' is not a node or edge feature on the "
+                "candidate graph."
+            )
     return solver
 
 

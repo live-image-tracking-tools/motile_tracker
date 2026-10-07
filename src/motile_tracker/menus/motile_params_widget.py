@@ -14,7 +14,7 @@ from superqt import QCollapsible, ensure_main_thread
 
 from motile_tracker.backend import MotileGraph, get_solver_name
 
-from .params_editor import SolverParamsEditor, TilingParamsEditor
+from .params_editor import AttributeWeightsEditor, SolverParamsEditor, TilingParamsEditor
 
 
 class MotileParamsWidget(QGroupBox):
@@ -36,6 +36,10 @@ class MotileParamsWidget(QGroupBox):
 
         self.stats_label = QLabel("")
         self.solver_params_widget = SolverParamsEditor()
+        self.attribute_weights_widget = AttributeWeightsEditor()
+        self.attribute_weights_widget.refresh_requested.connect(
+            self._refresh_attribute_weights
+        )
         self.tiling_params_widget = TilingParamsEditor()
         self.solver_label = QLabel("")
         self.gap_plot = self._plot_widget()
@@ -47,12 +51,18 @@ class MotileParamsWidget(QGroupBox):
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.stats_label)
         main_layout.addWidget(self.solver_params_widget)
+        main_layout.addWidget(self.attribute_weights_widget)
         main_layout.addWidget(self.tiling_params_widget)
         main_layout.addWidget(run_btn)
         main_layout.addWidget(self._progress_widget())
         self.setLayout(main_layout)
 
         self.update_stats()
+
+    def _refresh_attribute_weights(self) -> None:
+        """Rebuild the attribute weight rows from the currently selected
+        tracks' node/edge features."""
+        self.attribute_weights_widget.refresh_from_tracks(self.tracks_viewer.tracks)
 
     def update_stats(self, *_) -> None:
         """Refresh the stats label from the currently selected tracks, and
@@ -71,8 +81,16 @@ class MotileParamsWidget(QGroupBox):
         )
 
     def emit_run_solver(self) -> None:
-        """Emit run_solver with a copy of the current solver and tiling params."""
+        """Emit run_solver with a copy of the current solver and tiling params.
+
+        attribute_weights lives on a separate editor instance (so it can be
+        rebuilt independently of the rest of SolverParams), so it is merged in
+        here rather than living on self.solver_params_widget.solver_params.
+        """
         solver_params = self.solver_params_widget.solver_params.copy()
+        solver_params.attribute_weights = dict(
+            self.attribute_weights_widget.solver_params.attribute_weights
+        )
         tiling_params = self.tiling_params_widget.tiling_params.copy()
         self.run_solver.emit(solver_params, tiling_params)
 

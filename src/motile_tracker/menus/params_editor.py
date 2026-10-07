@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -259,10 +260,11 @@ class SolverParamsEditor(QWidget):
             "hyperparams": ["max_children"],
             "constant_costs": [
                 "edge_selection_cost",
+                "node_selection_cost",
                 "appear_cost",
                 "division_cost",
             ],
-            "attribute_costs": [
+            "position_costs": [
                 "distance_cost",
             ],
         }
@@ -276,7 +278,7 @@ class SolverParamsEditor(QWidget):
             self._params_group("Constant Costs", "constant_costs", negative=True)
         )
         main_layout.addWidget(
-            self._params_group("Attribute Weights", "attribute_costs", negative=True)
+            self._params_group("Position Cost", "position_costs", negative=True)
         )
         self.setLayout(main_layout)
 
@@ -300,6 +302,134 @@ class SolverParamsEditor(QWidget):
             layout.addWidget(param_row)
         widget.setLayout(layout)
         return widget
+
+
+class AttributeWeightRow(QWidget):
+    """A single labeled weight row for one entry of SolverParams.attribute_weights."""
+
+    valueChanged = Signal(str, object)  # attribute key, new weight (float or None)
+
+    def __init__(self, attribute: str, weight: float | None):
+        super().__init__()
+        self.attribute = attribute
+        self.param_label = QCheckBox(attribute)
+        self.param_label.setMinimumHeight(32)
+        self.param_value = EditableParamValue(float, negative=True)
+        self.param_label.toggled.connect(self._on_toggled)
+        self.param_value.valueChanged.connect(
+            lambda v: self.valueChanged.emit(self.attribute, v)
+        )
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.param_label)
+        layout.addWidget(self.param_value)
+        self.setLayout(layout)
+        self.setMinimumHeight(32)
+
+        self.set_weight(weight)
+
+    def set_weight(self, weight: float | None) -> None:
+        """Set this row's checked state and value without emitting valueChanged."""
+        self.param_value.blockSignals(True)
+        self.param_label.blockSignals(True)
+        if weight is None:
+            self.param_label.setChecked(False)
+            self.param_value.setEnabled(False)
+            self.param_value.update_value(0.0)
+        else:
+            self.param_label.setChecked(True)
+            self.param_value.setEnabled(True)
+            self.param_value.update_value(weight)
+        self.param_value.blockSignals(False)
+        self.param_label.blockSignals(False)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.param_value.setEnabled(checked)
+        value = self.param_value.get_value() if checked else None
+        self.valueChanged.emit(self.attribute, value)
+
+
+class AttributeWeightsEditor(QWidget):
+    """Widget for editing SolverParams.attribute_weights: a dynamic set of
+    weight rows, one per node/edge feature available on the currently
+    selected tracks.
+
+    Does not know about TracksViewer directly: the caller passes in the
+    Tracks to inspect via refresh_from_tracks (or None, to just clear rows).
+    """
+
+    new_params = Signal(SolverParams)
+    refresh_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.solver_params = SolverParams()
+        self.rows: dict[str, AttributeWeightRow] = {}
+
+        self.group = QGroupBox("Attribute Weights")
+        self.rows_layout = QVBoxLayout()
+        self.rows_layout.setSpacing(0)
+        self.group.setLayout(self.rows_layout)
+
+        refresh_btn = QPushButton("Refresh based on current features")
+        refresh_btn.setToolTip(
+            "Re-scan the currently selected tracks for node/edge features and "
+            "show a weight row for each one."
+        )
+        refresh_btn.clicked.connect(self._emit_refresh_request)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.group)
+        main_layout.addWidget(refresh_btn)
+        self.setLayout(main_layout)
+
+        self.new_params.connect(self._on_new_params)
+
+    def _emit_refresh_request(self) -> None:
+        self.refresh_requested.emit()
+
+    def refresh_from_tracks(self, tracks) -> None:
+        """Rebuild the weight rows from the feature keys available on
+        `tracks` (or clear all rows if `tracks` is None).
+
+        Existing weights for keys that are still available are preserved;
+        weights for keys no longer available are dropped.
+        """
+        keys = SolverParams.available_attribute_keys(tracks) if tracks is not None else []
+        self._set_keys(keys)
+
+    def _set_keys(self, keys: list[str]) -> None:
+        kept_weights = {
+            key: self.solver_params.attribute_weights[key]
+            for key in keys
+            if key in self.solver_params.attribute_weights
+        }
+        self.solver_params.attribute_weights = kept_weights
+
+        for row in self.rows.values():
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+        self.rows = {}
+
+        for key in keys:
+            row = AttributeWeightRow(key, kept_weights.get(key))
+            row.valueChanged.connect(self._on_row_value_changed)
+            self.rows_layout.addWidget(row)
+            self.rows[key] = row
+
+    def _on_row_value_changed(self, attribute: str, value: float | None) -> None:
+        weights = dict(self.solver_params.attribute_weights)
+        if value is None:
+            weights.pop(attribute, None)
+        else:
+            weights[attribute] = value
+        self.solver_params.attribute_weights = weights
+
+    def _on_new_params(self, params: SolverParams) -> None:
+        self.solver_params = params
+        self._set_keys(list(self.rows.keys()))
 
 
 class TilingParamsEditor(QWidget):
