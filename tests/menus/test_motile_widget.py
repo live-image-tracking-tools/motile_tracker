@@ -127,14 +127,14 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
     )
     widget.view_run_widget.run = run
     result = worker_fn(widget, run)
-    assert result.graph.num_nodes() > 0
-    for node in result.graph.node_ids():
+    assert result.graph_solution.num_nodes() > 0
+    for node in result.graph_solution.node_ids():
         assert result.get_track_id(node) is not None
 
     # Area feature is enabled and computed for all nodes
     assert "area" in result.features
-    for node in result.graph.node_ids():
-        assert result.graph.nodes[node]["area"] > 0
+    for node in result.graph_solution.node_ids():
+        assert result.graph_solution.nodes[node]["area"] > 0
 
     # Raises ValueError without input data
     run2 = MotileRun(
@@ -165,7 +165,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         patch("motile_tracker.menus.motile_widget.solve") as mock_solve,
     ):
         mock_build.return_value = create_empty_graphview_graph()
-        mock_solve.return_value = create_empty_graphview_graph()
+        mock_solve.side_effect = lambda tracks, *a, **k: tracks
         worker_fn = widget.solve_with_motile.__wrapped__
         worker_fn(widget, run3)
         mock_build.assert_called_once()
@@ -187,7 +187,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         patch("motile_tracker.menus.motile_widget.show_warning") as mock_warning,
     ):
         mock_build.return_value = create_empty_graphview_graph()
-        mock_solve.return_value = create_empty_graphview_graph()
+        mock_solve.side_effect = lambda tracks, *a, **k: tracks
         worker_fn = widget.solve_with_motile.__wrapped__
         worker_fn(widget, run4)
         mock_warning.assert_called_once()
@@ -216,7 +216,7 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
             ValueError("Duplicate values found among nodes"),
             create_empty_graphview_graph(),
         ]
-        mock_solve.return_value = create_empty_graphview_graph()
+        mock_solve.side_effect = lambda tracks, *a, **k: tracks
 
         relabeled = segmentation_2d.copy()
         relabeled[1][10:10, 10:10] = 100
@@ -231,13 +231,12 @@ def test_solve_with_motile(make_napari_viewer, segmentation_2d):
         # relabel called once
         assert mock_relabel.call_count == 1
 
-        # solve called once with the pre-built graph
+        # solve called once with the newly built MotileRun wrapping the
+        # pre-built candidate graph
         assert mock_solve.call_count == 1
-        call_kwargs = mock_solve.call_args[1]
-        assert call_kwargs["cand_graph"] is not None
-
-        # solve received the relabeled segmentation
-        assert mock_solve.call_args[0][1] is relabeled
+        solved_tracks = mock_solve.call_args[0][0]
+        assert isinstance(solved_tracks, MotileRun)
+        assert solved_tracks.input_segmentation is relabeled
 
 
 def test_solver_events_and_completion(make_napari_viewer, qtbot):

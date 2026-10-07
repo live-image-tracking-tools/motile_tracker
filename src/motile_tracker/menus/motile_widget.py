@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+import numpy as np
 from funtracks.data_model import Tracks
 from funtracks.utils import ensure_unique_labels
 from napari import Viewer
@@ -48,6 +49,7 @@ class MotileWidget(QWidget):
         # Create sub-widgets and connect signals
         self.edit_run_widget = RunEditor(self.viewer)
         self.edit_run_widget.start_run.connect(self._generate_tracks)
+        self.edit_run_widget.build_candidate_graph.connect(self._build_candidate_graph)
 
         self.view_run_widget = RunViewer()
         self.view_run_widget.edit_run.connect(self.edit_run)
@@ -151,28 +153,33 @@ class MotileWidget(QWidget):
         worker.returned.connect(self._on_solve_complete)
         worker.start()
 
+    def _build_candidate_graph(self, run: MotileRun) -> None:
+        """Called when we start building a candidate graph for a new run.
+        Switches from run editor to run viewer and starts building the
+        candidate graph in a separate thread to avoid blocking.
+
+        Args:
+            run (MotileRun): Build a candidate graph for this motile run.
+        """
+        run.status = "initializing"
+        self.view_run(run)
+        worker = self.build_candidate_run(run)
+        worker.returned.connect(self._on_build_candidate_complete)
+        worker.start()
+
     @thread_worker
-    def solve_with_motile(self, run: MotileRun) -> MotileRun:
-        """Runs the solver and relabels the segmentation to match
-        the solution graph.
-        Emits: self.solver_event when the solver provides an update
-        (will be emitted from the thread, which is why it needs to be an
-        event and not just a normal function callback)
+    def build_candidate_run(self, run: MotileRun) -> MotileRun:
+        """Builds the candidate graph for the given run and returns a new
+        MotileRun wrapping it (not yet solved).
 
         Args:
             run (MotileRun): A run with name, parameters, and input segmentation,
-                but not including the output graph or segmentation.
+                but not including the candidate graph.
 
         Returns:
-            MotileRun: The provided run with the output graph and segmentation included.
+            MotileRun: A new run with the candidate graph as its graph.
         """
-        if run.input_segmentation is not None:
-            input_data = run.input_segmentation
-        elif run.input_points is not None:
-            input_data = run.input_points
-        else:
-            raise ValueError("Must have one of input segmentation or points")
-
+        input_data = self._get_input_data(run)
         try:
             cand_graph = build_candidate_graph(input_data, run.solver_params, run.scale)
         except ValueError as e:
@@ -185,26 +192,103 @@ class MotileWidget(QWidget):
             else:
                 raise
 
-        solution_graph = solve(
-            run.solver_params,
-            input_data,
-            lambda event_data: self._on_solver_event(run, event_data),
-            scale=run.scale,
-            cand_graph=cand_graph,
-        )
-        # Create a new MotileRun with the solution graph so that
-        # SolutionTracks.__init__ runs fresh and correctly assigns track IDs
-        # via _setup_core_computed_features (detecting that track_id is absent).
-        run = MotileRun(
-            graph=solution_graph,
+        return MotileRun(
+            graph=cand_graph,
             run_name=run.run_name,
             solver_params=run.solver_params,
             input_segmentation=run.input_segmentation,
             input_points=run.input_points,
             time=run.time,
-            gaps=run.gaps,
             scale=run.scale,
             ndim=run.ndim,
+            status="candidate",
+        )
+
+    def _on_build_candidate_complete(self, run: MotileRun) -> None:
+        """Called when the candidate graph building thread returns. Updates
+        the run status and tells the run viewer to update.
+
+        Args:
+            run (MotileRun): The run with the candidate graph included.
+        """
+        run.status = "candidate"
+        self.solver_update.emit()
+        self.new_run(run, run.run_name)
+
+    def _get_input_data(self, run: MotileRun) -> np.ndarray:
+        """Get the input segmentation or points for a run.
+
+        Args:
+            run (MotileRun): The run to get input data for.
+
+        Returns:
+            np.ndarray: The input segmentation or points.
+        """
+        if run.input_segmentation is not None:
+            return run.input_segmentation
+        elif run.input_points is not None:
+            return run.input_points
+        else:
+            raise ValueError("Must have one of input segmentation or points")
+
+    @thread_worker
+    def solve_with_motile(self, run: MotileRun) -> MotileRun:
+        """Runs the solver and relabels the segmentation to match
+        the solution graph.
+        Emits: self.solver_event when the solver provides an update
+        (will be emitted from the thread, which is why it needs to be an
+        event and not just a normal function callback)
+
+        Args:
+            run (MotileRun): A run with name, parameters, and input segmentation,
+                and optionally an already-built candidate graph. If the run's
+                graph is not yet a candidate graph (status != "candidate"), one
+                is built first.
+
+        Returns:
+            MotileRun: The provided run with the output graph and segmentation included.
+        """
+        if run.status != "candidate":
+            input_data = self._get_input_data(run)
+            try:
+                cand_graph = build_candidate_graph(
+                    input_data, run.solver_params, run.scale
+                )
+            except ValueError as e:
+                if "Duplicate values found among nodes" in str(e):
+                    run.input_segmentation = ensure_unique_labels(run.input_segmentation)
+                    input_data = run.input_segmentation
+                    cand_graph = build_candidate_graph(
+                        input_data, run.solver_params, run.scale
+                    )
+                else:
+                    raise
+            # Create a new MotileRun wrapping the candidate graph so that
+            # SolutionTracks.__init__ runs fresh and correctly assigns track IDs
+            # via _setup_core_computed_features (detecting that track_id is absent).
+            run = MotileRun(
+                graph=cand_graph,
+                run_name=run.run_name,
+                solver_params=run.solver_params,
+                input_segmentation=run.input_segmentation,
+                input_points=run.input_points,
+                time=run.time,
+                scale=run.scale,
+                ndim=run.ndim,
+                status="candidate",
+            )
+
+        solve(
+            run,
+            run.solver_params,
+            lambda event_data: self._on_solver_event(run, event_data),
+        )
+        run.status = "done"
+        # Solving replaces the graph's topology, so the tracklet/lineage ids
+        # computed when the candidate graph was built are stale (or -1-sentinel
+        # placeholders); recompute them from the newly solved topology.
+        run.enable_features(
+            [run.features.tracklet_key, run.features.lineage_key], recompute=True
         )
         if "mask" in run.graph_solution.node_attr_keys():
             seg_shape = run.graph_solution.metadata.get("shape")

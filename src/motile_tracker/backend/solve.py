@@ -12,6 +12,7 @@ from funtracks.candidate_graph import (
     compute_graph_from_points_list,
     compute_graph_from_seg,
 )
+from funtracks.data_model import Tracks
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from motile import Solver, TrackGraph
 from motile.constraints import MaxChildren, MaxParents
@@ -84,70 +85,179 @@ def graphview_to_motile_dicts(
 
     return nodes, edges
 
+def _reset_solution(tracks):
+    graph = tracks.graph_full
+    all_node_ids = graph.node_ids()
+    all_edge_ids = graph.edge_ids()
+    if all_node_ids:
+        graph.update_node_attrs(
+            node_ids=all_node_ids,
+            attrs={"solution": False, PIN_ATTR: PIN_UNSET},
+        )
+    if all_edge_ids:
+        graph.update_edge_attrs(
+            edge_ids=all_edge_ids,
+            attrs={"solution": False, PIN_ATTR: PIN_UNSET},
+        )
 
-def solve(
-    solver_params: SolverParams,
-    input_data: np.ndarray,
-    on_solver_update: Callable | None = None,
-    scale: list | None = None,
-    cand_graph: td.graph.GraphView | None = None,
-) -> td.graph.GraphView:
-    """Get a tracking solution for the given segmentation and parameters.
-
-    Constructs a candidate graph from the segmentation (unless one is
-    provided), a solver from the parameters, and then runs solving and
-    returns a networkx graph with the solution. Most of this functionality
-    is implemented in the motile toolbox.
+def _get_windows(
+    solver_params: SolverParams, total_time_points: int
+) -> tuple[list[tuple[int, int]], bool]:
+    """Compute the (start, end) frame windows to solve, and whether chunking applies.
 
     Args:
+        solver_params: Supplies window_size/overlap_size, if chunked solving
+            was requested, and single_window_start for interactively testing
+            parameters on just one window.
+        total_time_points: Total number of frames to cover, starting at 0.
+
+    Returns:
+        A tuple of (windows, is_windowed). windows is a list of (start, end)
+        ranges (end exclusive) covering [0, total_time_points) — or, if
+        single_window_start is set, just that one window. is_windowed is
+        False when window_size is None, in which case windows is a single
+        range spanning everything.
+
+    Raises:
+        ValueError: If single_window_start is beyond the last frame, or if
+            overlap_size is missing/invalid when window_size is set.
+    """
+    window_size = solver_params.window_size
+    if window_size is None:
+        return [(0, total_time_points)], False
+
+    single_window_start = solver_params.single_window_start
+    if single_window_start is not None:
+        max_time = total_time_points - 1
+        if single_window_start > max_time:
+            raise ValueError(
+                f"single_window_start ({single_window_start}) is beyond "
+                f"last frame ({max_time})"
+            )
+        window_end = min(single_window_start + window_size, total_time_points)
+        return [(single_window_start, window_end)], True
+
+    overlap_size = solver_params.overlap_size
+    if overlap_size is None:
+        raise ValueError("overlap_size is required when window_size is set")
+    if overlap_size >= window_size:
+        raise ValueError(
+            f"overlap_size ({overlap_size}) must be less than window_size ({window_size})"
+        )
+
+    windows = []
+    start = 0
+    while start < total_time_points:
+        end = min(start + window_size, total_time_points)
+        windows.append((start, end))
+        start += window_size - overlap_size
+    return windows, True
+
+def solve(
+    tracks: Tracks,
+    solver_params: SolverParams,
+    on_solver_update: Callable | None = None,
+) -> Tracks:
+    """Get a tracking solution for the given full candidate tracks and parameters.
+
+    Args:
+        tracks: the tracks (with all candidate node and edges and scores)
+            to run solving on
         solver_params (SolverParams): The solver parameters to use when
             initializing the solver
-        input_data (np.ndarray): The input segmentation or points list to run
-            tracking on. If 2D, assumed to be a list of points, otherwise a
-            segmentation.
         on_solver_update (Callable, optional): A function that is called
             whenever the motile solver emits an event. The function should take
             a dictionary of event data, and can be used to track progress of
             the solver. Defaults to None.
-        scale (list, optional): The scale of the data in each dimension.
-        cand_graph (td.graph.GraphView, optional): A pre-built candidate graph. If
-            provided, skips candidate graph construction (except for
-            single-window mode which always builds its own). Defaults to None.
 
     Returns:
-        td.graph.GraphView: A solution graph where the ids of the nodes correspond to
-            the time and ids of the passed in segmentation labels. See funtracks for exact
-            implementation details.
+        tracks with solution and pinning attributes set on graph_full
     """
-    # Single window mode: slice input, solve, and return early
-    if (
-        solver_params.window_size is not None
-        and solver_params.single_window_start is not None
-    ):
-        result = _solve_single_window(
-            input_data, solver_params, on_solver_update, scale
-        )
-    else:
-        if cand_graph is None:
-            cand_graph = build_candidate_graph(input_data, solver_params, scale)
+    graph = tracks.graph_full
 
-        if solver_params.window_size is not None:
-            result = _solve_chunked(cand_graph, solver_params, on_solver_update)
+    time_points = graph.time_points()
+    total_time_points = max(time_points) + 1 if time_points else 0
+    windows, windowed = _get_windows(solver_params, total_time_points)
+
+    # ensure the pin schema exists before _reset_solution writes to it
+    if PIN_ATTR not in graph.node_attr_keys():
+        graph.add_node_attr_key(PIN_ATTR, default_value=PIN_UNSET, dtype=pl.Int8)
+    if PIN_ATTR not in graph.edge_attr_keys():
+        graph.add_edge_attr_key(PIN_ATTR, default_value=PIN_UNSET, dtype=pl.Int8)
+
+    _reset_solution(tracks)
+
+    for start, end in windows:
+        if windowed:
+            window_node_ids = graph.filter(
+                (td.NodeAttr("t") >= start) & (td.NodeAttr("t") < end)
+            ).node_ids()
+            cand_graph = graph.filter(node_ids=window_node_ids).subgraph()
         else:
-            result = _solve_full(cand_graph, solver_params, on_solver_update)
+            cand_graph = graph.filter().subgraph()
 
-    if input_data.ndim != 2:
-        result._update_metadata(shape=input_data.shape)
+        solver = construct_solver(cand_graph, solver_params)
+        start_time = time.time()
+        solution = solver.solve(verbose=False, on_event=on_solver_update)
+        logger.info("Solution took %.2f seconds", time.time() - start_time)
 
-    return result
+        solution_tg = solver.get_selected_subgraph(solution=solution)
+        selected_nodes = set(solution_tg.nodes.keys())
+        selected_edges = set(solution_tg.edges.keys())  # (source_id, target_id) pairs
 
+        # Pin every node/edge in this window to the decision just made, not just
+        # the overlap region: TernaryPin fixes already-pinned nodes/edges to their
+        # existing value, so a later overlapping window reproduces the same
+        # decision for them regardless of whether we repin them here.
+        window_node_ids = cand_graph.node_ids()
+        node_is_selected = [n in selected_nodes for n in window_node_ids]
+        graph.update_node_attrs(
+            node_ids=window_node_ids,
+            attrs={
+                "solution": node_is_selected,
+                PIN_ATTR: [
+                    PIN_SELECTED if s else PIN_UNSELECTED for s in node_is_selected
+                ],
+            },
+        )
+
+        edge_pairs = cand_graph.edge_list()
+        window_edge_ids = [cand_graph.edge_id(u, v) for u, v in edge_pairs]
+        edge_is_selected = [(u, v) in selected_edges for u, v in edge_pairs]
+        graph.update_edge_attrs(
+            edge_ids=window_edge_ids,
+            attrs={
+                "solution": edge_is_selected,
+                PIN_ATTR: [
+                    PIN_SELECTED if s else PIN_UNSELECTED for s in edge_is_selected
+                ],
+            },
+        )
+
+    # PIN_ATTR is solving-internal bookkeeping; strip it before handing tracks back.
+    if PIN_ATTR in graph.node_attr_keys():
+        graph.remove_node_attr_key(PIN_ATTR)
+    if PIN_ATTR in graph.edge_attr_keys():
+        graph.remove_edge_attr_key(PIN_ATTR)
+
+    # graph_solution is a LIVE filtered view whose membership was fixed at
+    # Tracks.__init__ time: it propagates attribute value writes to nodes/edges
+    # already in the view, but does not re-evaluate which nodes/edges satisfy
+    # the solution==True filter after we just changed that attribute. Rebuild it
+    # so it reflects the solution we just wrote to graph_full.
+    tracks.graph_solution = graph.filter(
+        td.NodeAttr("solution") == True,  # noqa: E712
+        td.EdgeAttr("solution") == True,  # noqa: E712
+    ).subgraph(mode=td.graph.ViewMode.LIVE)
+
+    return tracks
 
 def build_candidate_graph(
     input_data: np.ndarray,
     solver_params: SolverParams,
     scale: list | None = None,
     time_offset: int = 0,
-) -> td.graph.GraphView:
+) -> td.graph.BaseGraph:
     """Build the candidate graph from input data."""
     if input_data.ndim == 2:
         cand_graph = compute_graph_from_points_list(
@@ -162,366 +272,25 @@ def build_candidate_graph(
             t_start=time_offset,
         )
     logger.debug("Cand graph has %d nodes", cand_graph.num_nodes())
-    return cand_graph
 
-
-def _solve_full(
-    cand_graph: td.graph.GraphView,
-    solver_params: SolverParams,
-    on_solver_update: Callable | None = None,
-) -> td.graph.GraphView:
-    """Solve the tracking problem on the full candidate graph at once."""
-    solver = construct_solver(cand_graph, solver_params)
-    start_time = time.time()
-    solution = solver.solve(verbose=False, on_event=on_solver_update)
-    logger.info("Solution took %.2f seconds", time.time() - start_time)
-
-    solution_tg = solver.get_selected_subgraph(solution=solution)
-    selected_nodes = list(solution_tg.nodes.keys())
-    selected_edges = set(solution_tg.edges.keys())
-    logger.debug("Solution graph has %d nodes", len(selected_nodes))
-    result = cand_graph.filter(node_ids=selected_nodes).subgraph().detach()
-    for u, v in list(result.edge_list()):
-        if (u, v) not in selected_edges:
-            result.remove_edge(u, v)
-    return result.filter().subgraph()
-
-
-def _solve_window(
-    window_subgraph: td.graph.GraphView,
-    solver_params: SolverParams,
-    on_solver_update: Callable | None = None,
-) -> td.graph.GraphView | None:
-    """Solve a single window subgraph.
-
-    This is the core solving logic shared by both single window mode and
-    chunked solving.
-
-    Args:
-        window_subgraph: The subgraph for this window. If any nodes or edges
-            have the PIN_ATTR attribute set, a Pin constraint will be used.
-        solver_params: The solver parameters.
-        on_solver_update: Callback for solver progress updates.
-
-    Returns:
-        The solution graph for this window, or None if the window has no nodes.
-    """
-    if window_subgraph.num_nodes() == 0:
-        return None
-
-    # Handle edge case: if no edges, motile can't solve — return all nodes directly
-    if window_subgraph.num_edges() == 0:
-        logger.info(
-            "Window has no edges (%d nodes), returning nodes directly",
-            window_subgraph.num_nodes(),
-        )
-        return window_subgraph
-
-    solver = construct_solver(window_subgraph, solver_params)
-    start_time = time.time()
-    solution = solver.solve(verbose=False, on_event=on_solver_update)
-    logger.info("Window solved in %.2f seconds", time.time() - start_time)
-    solution_tg = solver.get_selected_subgraph(solution=solution)
-    selected_nodes = list(solution_tg.nodes.keys())
-    selected_edges = set(solution_tg.edges.keys())
-    result = window_subgraph.filter(node_ids=selected_nodes).subgraph().detach()
-    for u, v in list(result.edge_list()):
-        if (u, v) not in selected_edges:
-            result.remove_edge(u, v)
-    return result.filter().subgraph()
-
-
-def _solve_single_window(
-    input_data: np.ndarray,
-    solver_params: SolverParams,
-    on_solver_update: Callable | None = None,
-    scale: list | None = None,
-) -> td.graph.GraphView:
-    """Solve a single window for interactive parameter testing.
-
-    Builds the full candidate graph, filters it to the window frames, and solves.
-    Node times are naturally correct (no adjustment needed).
-
-    Args:
-        input_data: The full input segmentation or points list.
-        solver_params: The solver parameters including window_size and single_window_start.
-        on_solver_update: Callback for solver progress updates.
-        scale: The scale of the data in each dimension.
-
-    Returns:
-        The solution graph for the requested window.
-
-    Raises:
-        ValueError: If single_window_start is beyond the data range.
-    """
-    window_start = solver_params.single_window_start
-    window_size = solver_params.window_size
-    window_end = window_start + window_size
-
-    # Validate window_start against data range
-    max_time = (
-        input_data.shape[0] - 1 if input_data.ndim != 2 else int(input_data[:, 0].max())
-    )
-    if window_start > max_time:
-        raise ValueError(
-            f"single_window_start ({window_start}) is beyond last frame ({max_time})"
-        )
-
-    logger.info(
-        "Solving single window: frames %d to %d (exclusive)",
-        window_start,
-        window_end,
-    )
-
-    # Slice input to window frames only — avoids building full candidate graph
-    if input_data.ndim == 2:
-        # Points list: filter rows where time column (col 0) is in [window_start, window_end)
-        row_mask = (input_data[:, 0] >= window_start) & (input_data[:, 0] < window_end)
-        sliced_input = input_data[row_mask]
+    # A candidate graph holds every possible node/edge, not yet a solution —
+    # Tracks defaults "solution" to True (correct for wrapping an already-solved
+    # result), so it must be explicitly cleared here or graph_solution would show
+    # the entire unsolved candidate tangle.
+    if "solution" not in cand_graph.node_attr_keys():
+        cand_graph.add_node_attr_key("solution", default_value=False, dtype=pl.Boolean)
     else:
-        # Segmentation: numpy slice is a view (no copy)
-        sliced_input = input_data[window_start:window_end]
-
-    cand_graph = build_candidate_graph(
-        sliced_input, solver_params, scale, time_offset=window_start
-    )
-
-    start_time = time.time()
-    solution = _solve_window(cand_graph, solver_params, on_solver_update)
-    logger.info("Single window solution took %.2f seconds", time.time() - start_time)
-
-    if solution is None:
-        logger.warning("Window has no nodes")
-        return create_empty_graphview_graph()
-
-    logger.debug(
-        "Single window solution has %d nodes, %d edges",
-        solution.num_nodes(),
-        solution.num_edges(),
-    )
-    return solution
-
-
-def _solve_chunked(
-    cand_graph: td.graph.GraphView,
-    solver_params: SolverParams,
-    on_solver_update: Callable | None = None,
-) -> td.graph.GraphView:
-    """Solve the tracking problem in chunks using a sliding window approach.
-
-    This function solves the tracking problem in windows of `window_size` frames,
-    with `overlap_size` frames of overlap between consecutive windows. The overlap
-    region from the previous window is pinned (fixed) when solving the next window
-    to maintain consistency across windows.
-
-    Args:
-        cand_graph: The full candidate graph with all nodes and edges.
-        solver_params: The solver parameters including window_size and overlap_size.
-        on_solver_update: Callback for solver progress updates.
-
-    Returns:
-        The combined solution graph from all windows.
-    """
-    window_size = solver_params.window_size
-    overlap_size = solver_params.overlap_size
-    if overlap_size is None:
-        raise ValueError("overlap_size is required when window_size is set")
-
-    if overlap_size >= window_size:
-        raise ValueError(
-            f"overlap_size ({overlap_size}) must be less than window_size ({window_size})"
-        )
-
-    # Get the frame range from the candidate graph
-    times = [cand_graph.nodes[n]["t"] for n in cand_graph.node_ids()]
-    if not times:
-        return create_empty_graphview_graph()
-
-    min_time = min(times)
-    max_time = max(times)
-    total_frames = max_time - min_time + 1
-
-    # Warn if window_size is larger than data - chunking won't help
-    if window_size >= total_frames:
-        logger.warning(
-            "window_size (%d) is >= total frames (%d), "
-            "chunked solving will behave like full solving",
-            window_size,
-            total_frames,
-        )
-
-    logger.info(
-        "Starting chunked solve: %d frames, window_size=%d, overlap_size=%d",
-        total_frames,
-        window_size,
-        overlap_size,
-    )
-
-    # Ensure the PIN_ATTR schema exists before any window subgraph is built. A
-    # GraphView's attr key set is fixed at creation time, so a view created before
-    # this key exists on cand_graph would never see pin values written to it later.
-    if PIN_ATTR not in cand_graph.node_attr_keys():
-        cand_graph.add_node_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
-    if PIN_ATTR not in cand_graph.edge_attr_keys():
-        cand_graph.add_edge_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
-
-    all_selected_nodes: set[int] = set()
-    all_selected_edges: set[tuple] = set()
-    window_start = min_time
-    window_num = 0
-    start_time = time.time()
-
-    while window_start <= max_time:
-        window_end = min(window_start + window_size, max_time + 1)
-        window_num += 1
-
-        logger.info(
-            "Solving window %d: frames %d to %d (exclusive)",
-            window_num,
-            window_start,
-            window_end,
-        )
-
-        # Extract subgraph for this window (includes PIN_ATTR if set on cand_graph).
-        # mode=LIVE so pins written to cand_graph for a later window's overlap
-        # region are visible if this same window_subgraph view is read again.
-        nodes_in_window = [
-            n
-            for n in cand_graph.node_ids()
-            if window_start <= cand_graph.nodes[n]["t"] < window_end
-        ]
-        window_subgraph = cand_graph.filter(node_ids=nodes_in_window).subgraph(
-            mode=td.graph.ViewMode.LIVE
-        )
-
-        # Solve this window
-        window_solution = _solve_window(
-            window_subgraph, solver_params, on_solver_update
-        )
-
-        if window_solution is None:
-            logger.warning("Window %d has no nodes, skipping", window_num)
-            window_start += window_size - overlap_size
-            continue
-
-        logger.debug(
-            "Window %d solution has %d nodes, %d edges",
-            window_num,
-            window_solution.num_nodes(),
-            window_solution.num_edges(),
-        )
-
-        # Collect selected nodes and edges from this window, excluding the pinned
-        # overlap region that was already committed from the previous window.
-        overlap_start = window_start + window_size - overlap_size
-        from_frame = None if window_num == 1 else window_start + overlap_size
-        for nid in window_solution.node_ids():
-            if from_frame is None or window_solution.nodes[nid]["t"] >= from_frame:
-                all_selected_nodes.add(nid)
-        # An edge is "owned" by this window if its target is in the newly
-        # decided region. This correctly includes the boundary edge whose
-        # source is the last pinned frame from the previous window.
-        for u, v in window_solution.edge_list():
-            v_time = window_solution.nodes[v]["t"]
-            if from_frame is None or v_time >= from_frame:
-                all_selected_edges.add((u, v))
-
-        # Set PIN_ATTR on candidate graph for the overlap region (for next window)
-        if window_end <= max_time:
-            _set_pinning_on_graph(
-                cand_graph, window_solution, overlap_start, window_end
-            )
-
-        # Move window
-        window_start += window_size - overlap_size
-
-    logger.info(
-        "Chunked solve complete: %d windows, %.2f seconds total",
-        window_num,
-        time.time() - start_time,
-    )
-
-    if not all_selected_nodes:
-        return create_empty_graphview_graph()
-
-    result = cand_graph.filter(node_ids=list(all_selected_nodes)).subgraph().detach()
-    for u, v in list(result.edge_list()):
-        if (u, v) not in all_selected_edges:
-            result.remove_edge(u, v)
-    # PIN_ATTR is solving-internal bookkeeping on cand_graph; strip it from the result.
-    if PIN_ATTR in result.node_attr_keys():
-        result.remove_node_attr_key(PIN_ATTR)
-    if PIN_ATTR in result.edge_attr_keys():
-        result.remove_edge_attr_key(PIN_ATTR)
-    result = result.filter().subgraph()
-    logger.debug(
-        "Combined solution has %d nodes, %d edges",
-        result.num_nodes(),
-        result.num_edges(),
-    )
-    return result
-
-
-def _set_pinning_on_graph(
-    cand_graph: td.graph.GraphView,
-    solution_graph: td.graph.GraphView,
-    overlap_start: int,
-    overlap_end: int,
-) -> None:
-    """Set PIN_ATTR on candidate graph nodes/edges in the overlap region.
-
-    For all nodes and edges in the overlap region [overlap_start, overlap_end),
-    sets PIN_ATTR to PIN_SELECTED if selected in the solution, PIN_UNSELECTED
-    if not selected. Everything outside the overlap region stays PIN_UNSET.
-
-    Args:
-        cand_graph: The full candidate graph to modify in place.
-        solution_graph: The solution graph from the current window.
-        overlap_start: Start frame of overlap region (inclusive).
-        overlap_end: End frame of overlap region (exclusive).
-    """
-    solution_nodes = set(solution_graph.node_ids())
-    solution_edges = {tuple(e) for e in solution_graph.edge_list()}
-
-    # Ensure PIN_ATTR columns exist in schema (default PIN_UNSET = unconstrained)
-    if PIN_ATTR not in cand_graph.node_attr_keys():
-        cand_graph.add_node_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
-    if PIN_ATTR not in cand_graph.edge_attr_keys():
-        cand_graph.add_edge_attr_key(PIN_ATTR, pl.Int8, default_value=PIN_UNSET)
-
-    # Pin nodes in the overlap region
-    nodes_to_pin = []
-    pin_node_values = []
-    for node in cand_graph.node_ids():
-        node_time = cand_graph.nodes[node]["t"]
-        if overlap_start <= node_time < overlap_end:
-            nodes_to_pin.append(node)
-            pin_node_values.append(
-                PIN_SELECTED if node in solution_nodes else PIN_UNSELECTED
-            )
-    if nodes_to_pin:
         cand_graph.update_node_attrs(
-            node_ids=nodes_to_pin, attrs={PIN_ATTR: pin_node_values}
+            node_ids=cand_graph.node_ids(), attrs={"solution": False}
+        )
+    if "solution" not in cand_graph.edge_attr_keys():
+        cand_graph.add_edge_attr_key("solution", default_value=False, dtype=pl.Boolean)
+    else:
+        cand_graph.update_edge_attrs(
+            edge_ids=cand_graph.edge_ids(), attrs={"solution": False}
         )
 
-    # Pin edges where both endpoints are in the overlap region
-    edges_to_pin = []
-    pin_edge_values = []
-    for u, v in cand_graph.edge_list():
-        u_time = cand_graph.nodes[u]["t"]
-        v_time = cand_graph.nodes[v]["t"]
-        if (
-            overlap_start <= u_time < overlap_end
-            and overlap_start <= v_time < overlap_end
-        ):
-            edges_to_pin.append(cand_graph.edge_id(u, v))
-            pin_edge_values.append(
-                PIN_SELECTED if (u, v) in solution_edges else PIN_UNSELECTED
-            )
-    if edges_to_pin:
-        cand_graph.update_edge_attrs(
-            edge_ids=edges_to_pin, attrs={PIN_ATTR: pin_edge_values}
-        )
+    return cand_graph
 
 
 class TernaryPin(Constraint):

@@ -1,15 +1,28 @@
 import numpy as np
 import pytest
+from funtracks.data_model import Tracks
 from funtracks.utils.tracksdata_utils import assert_node_attrs_equal_with_masks
 
 from motile_tracker.backend import SolverParams, solve
+from motile_tracker.backend.solve import build_candidate_graph
+
+
+def _tracks_from(input_data, solver_params, scale=None):
+    """Build a Tracks object wrapping the candidate graph for input_data."""
+    cand_graph = build_candidate_graph(input_data, solver_params, scale=scale)
+    # A points list is an (N, D) array of D-dimensional points (e.g. t, y, x);
+    # a segmentation's own ndim (t, [z], y, x) already matches the Tracks ndim.
+    ndim = input_data.shape[1] if input_data.ndim == 2 else input_data.ndim
+    return Tracks(cand_graph, ndim=ndim, time_attr="t")
 
 
 # capsys is a pytest fixture that captures stdout and stderr output streams
 def test_solve_2d(graph_2d, segmentation_2d):
     params = SolverParams()
     params.appear_cost = None
-    soln_graph = solve(params, segmentation_2d)
+    tracks = _tracks_from(segmentation_2d, params)
+    solve(tracks, params)
+    soln_graph = tracks.graph_solution
 
     # remove nodes that don't make the solution
     # node 4 is too far from node 3
@@ -23,8 +36,9 @@ def test_solve_2d(graph_2d, segmentation_2d):
 def test_solve_3d(graph_3d, segmentation_3d):
     params = SolverParams()
     params.appear_cost = None
-    soln_graph = solve(params, segmentation_3d)
-    assert set(soln_graph.node_ids()) == set(graph_3d.node_ids())
+    tracks = _tracks_from(segmentation_3d, params)
+    solve(tracks, params)
+    assert set(tracks.graph_solution.node_ids()) == set(graph_3d.node_ids())
 
 
 def test_solve_chunked(segmentation_3d):
@@ -32,14 +46,18 @@ def test_solve_chunked(segmentation_3d):
     # First solve without chunking
     params = SolverParams()
     params.appear_cost = None
-    full_solution = solve(params, segmentation_3d)
+    full_tracks = _tracks_from(segmentation_3d, params)
+    solve(full_tracks, params)
+    full_solution = full_tracks.graph_solution
 
     # Then solve with chunking
     params_chunked = SolverParams()
     params_chunked.appear_cost = None
     params_chunked.window_size = 3
     params_chunked.overlap_size = 1
-    chunked_solution = solve(params_chunked, segmentation_3d)
+    chunked_tracks = _tracks_from(segmentation_3d, params_chunked)
+    solve(chunked_tracks, params_chunked)
+    chunked_solution = chunked_tracks.graph_solution
 
     # Solutions should have the same nodes and edges
     assert set(full_solution.node_ids()) == set(chunked_solution.node_ids())
@@ -65,14 +83,18 @@ def test_solve_chunked_multiple_windows_no_boundary_discontinuity():
     params_full = SolverParams()
     params_full.appear_cost = None
     params_full.iou_cost = None
-    full_solution = solve(params_full, points)
+    full_tracks = _tracks_from(points, params_full)
+    solve(full_tracks, params_full)
+    full_solution = full_tracks.graph_solution
 
     params_chunked = SolverParams()
     params_chunked.appear_cost = None
     params_chunked.iou_cost = None
     params_chunked.window_size = 4
     params_chunked.overlap_size = 2
-    chunked_solution = solve(params_chunked, points)
+    chunked_tracks = _tracks_from(points, params_chunked)
+    solve(chunked_tracks, params_chunked)
+    chunked_solution = chunked_tracks.graph_solution
 
     assert set(full_solution.node_ids()) == set(chunked_solution.node_ids())
     assert {tuple(e) for e in full_solution.edge_list()} == {
@@ -96,7 +118,9 @@ def test_solve_single_window(segmentation_3d):
     params.window_size = 3
     params.single_window_start = 1  # Start at frame 1
 
-    solution = solve(params, segmentation_3d)
+    tracks = _tracks_from(segmentation_3d, params)
+    solve(tracks, params)
+    solution = tracks.graph_solution
 
     # Should only have nodes from frames 1, 2, 3
     assert solution.num_nodes() > 0
@@ -113,7 +137,9 @@ def test_solve_single_window_start_0(segmentation_2d):
     params.window_size = 2
     params.single_window_start = 0
 
-    solution = solve(params, segmentation_2d)
+    tracks = _tracks_from(segmentation_2d, params)
+    solve(tracks, params)
+    solution = tracks.graph_solution
 
     assert solution.num_nodes() > 0
     for node in solution.node_ids():
@@ -138,7 +164,9 @@ def test_solve_single_window_points():
     params.window_size = 2
     params.single_window_start = 1
 
-    solution = solve(params, points)
+    tracks = _tracks_from(points, params)
+    solve(tracks, params)
+    solution = tracks.graph_solution
 
     assert solution.num_nodes() > 0
     for node in solution.node_ids():
@@ -154,5 +182,6 @@ def test_solve_single_window_invalid_start(segmentation_3d):
     params.window_size = 3
     params.single_window_start = 100  # Beyond data range (5 frames)
 
+    tracks = _tracks_from(segmentation_3d, params)
     with pytest.raises(ValueError, match="beyond last frame"):
-        solve(params, segmentation_3d)
+        solve(tracks, params)

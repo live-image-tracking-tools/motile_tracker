@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 class RunEditor(QGroupBox):
     start_run = Signal(MotileRun)
+    build_candidate_graph = Signal(MotileRun)
 
     def __init__(self, viewer: napari.Viewer):
         """A widget for editing run parameters and starting solving.
@@ -52,6 +53,14 @@ class RunEditor(QGroupBox):
         self.run_name: QLineEdit
         self.layer_selection_box: QComboBox
 
+        # Build Candidate Graph button
+        build_candidate_graph_btn = QPushButton("Build Candidate Graph")
+        build_candidate_graph_btn.clicked.connect(self.emit_build_candidate_graph)
+        build_candidate_graph_btn.setToolTip(
+            "Build the candidate graph without solving. Might take minutes or "
+            "longer for larger samples."
+        )
+
         # Generate Tracks button
         generate_tracks_btn = QPushButton(f"Run Tracking ({get_solver_name()})")
         generate_tracks_btn.clicked.connect(self.emit_run)
@@ -63,6 +72,7 @@ class RunEditor(QGroupBox):
         main_layout.addWidget(self._run_widget())
         main_layout.addWidget(self._labels_layer_widget())
         main_layout.addWidget(self.solver_params_widget)
+        main_layout.addWidget(build_candidate_graph_btn)
         main_layout.addWidget(generate_tracks_btn)
         self.setLayout(main_layout)
         self.update_layer_selection()
@@ -240,6 +250,15 @@ class RunEditor(QGroupBox):
         run = self.get_run()
         if run is not None:
             self.start_run.emit(run)
+
+    def emit_build_candidate_graph(self) -> None:
+        """Construct a run and start building its candidate graph by emitting
+        the build_candidate_graph signal for the main widget to connect to.
+        If run is invalid, will not emit the signal.
+        """
+        run = self.get_run()
+        if run is not None:
+            self.build_candidate_graph.emit(run)
 
     def new_run(self, run: MotileRun) -> None:
         """Configure the run editor to copy the name and params of the given
