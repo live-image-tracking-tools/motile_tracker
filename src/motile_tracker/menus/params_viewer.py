@@ -81,10 +81,13 @@ class SolverParamsViewer(QWidget):
                 "distance_cost",
                 "iou_cost",
             ],
-            "chunking": [
+            "chunked_solving": [
                 "window_size",
                 "overlap_size",
+            ],
+            "single_window": [
                 "single_window_start",
+                "single_window_size",
             ],
         }
         main_layout = QVBoxLayout()
@@ -100,7 +103,12 @@ class SolverParamsViewer(QWidget):
             )
         )
         main_layout.addWidget(
-            self._params_group(title="Chunked Solving", param_category="chunking")
+            self._params_group(
+                title="Chunked Solving", param_category="chunked_solving"
+            )
+        )
+        main_layout.addWidget(
+            self._params_group(title="Single Window", param_category="single_window")
         )
         main_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(main_layout)

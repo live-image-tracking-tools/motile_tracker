@@ -103,39 +103,25 @@ def _reset_solution(tracks):
 def _get_windows(
     solver_params: SolverParams, total_time_points: int
 ) -> tuple[list[tuple[int, int]], bool]:
-    """Compute the (start, end) frame windows to solve, and whether chunking applies.
+    """Compute the (start, end) sliding/chunked windows to solve.
 
     Args:
-        solver_params: Supplies window_size/overlap_size, if chunked solving
-            was requested, and single_window_start for interactively testing
-            parameters on just one window.
+        solver_params: Supplies window_size/overlap_size for chunked solving
+            over the whole dataset.
         total_time_points: Total number of frames to cover, starting at 0.
 
     Returns:
         A tuple of (windows, is_windowed). windows is a list of (start, end)
-        ranges (end exclusive) covering [0, total_time_points) — or, if
-        single_window_start is set, just that one window. is_windowed is
+        ranges (end exclusive) covering [0, total_time_points). is_windowed is
         False when window_size is None, in which case windows is a single
         range spanning everything.
 
     Raises:
-        ValueError: If single_window_start is beyond the last frame, or if
-            overlap_size is missing/invalid when window_size is set.
+        ValueError: If overlap_size is missing/invalid when window_size is set.
     """
     window_size = solver_params.window_size
     if window_size is None:
         return [(0, total_time_points)], False
-
-    single_window_start = solver_params.single_window_start
-    if single_window_start is not None:
-        max_time = total_time_points - 1
-        if single_window_start > max_time:
-            raise ValueError(
-                f"single_window_start ({single_window_start}) is beyond "
-                f"last frame ({max_time})"
-            )
-        window_end = min(single_window_start + window_size, total_time_points)
-        return [(single_window_start, window_end)], True
 
     overlap_size = solver_params.overlap_size
     if overlap_size is None:
@@ -258,7 +244,43 @@ def build_candidate_graph(
     scale: list | None = None,
     time_offset: int = 0,
 ) -> td.graph.BaseGraph:
-    """Build the candidate graph from input data."""
+    """Build the candidate graph from input data.
+
+    If solver_params.single_window_start is set, input_data is sliced down to
+    just that window (single_window_size frames, or the rest of the data if
+    unset) before building, so the candidate graph only contains nodes from
+    that window — useful for interactively testing parameters on a small
+    portion of the data before running on the full dataset. Node times stay
+    absolute via time_offset.
+    """
+    single_window_start = solver_params.single_window_start
+    if single_window_start is not None:
+        max_time = (
+            input_data.shape[0] - 1
+            if input_data.ndim != 2
+            else int(input_data[:, 0].max())
+        )
+        if single_window_start > max_time:
+            raise ValueError(
+                f"single_window_start ({single_window_start}) is beyond "
+                f"last frame ({max_time})"
+            )
+        single_window_size = solver_params.single_window_size
+        window_end = (
+            max_time + 1
+            if single_window_size is None
+            else min(single_window_start + single_window_size, max_time + 1)
+        )
+        if input_data.ndim == 2:
+            row_mask = (input_data[:, 0] >= single_window_start) & (
+                input_data[:, 0] < window_end
+            )
+            input_data = input_data[row_mask]
+        else:
+            # numpy slice is a view (no copy)
+            input_data = input_data[single_window_start:window_end]
+        time_offset = single_window_start
+
     if input_data.ndim == 2:
         cand_graph = compute_graph_from_points_list(
             input_data, solver_params.max_edge_distance, scale=scale

@@ -115,7 +115,7 @@ def test_solve_single_window(segmentation_3d):
     """Test solving just a single window for interactive testing."""
     params = SolverParams()
     params.appear_cost = None
-    params.window_size = 3
+    params.single_window_size = 3
     params.single_window_start = 1  # Start at frame 1
 
     tracks = _tracks_from(segmentation_3d, params)
@@ -134,7 +134,7 @@ def test_solve_single_window_start_0(segmentation_2d):
     """Window starting at frame 0 — no t-shift should be applied."""
     params = SolverParams()
     params.appear_cost = None
-    params.window_size = 2
+    params.single_window_size = 2
     params.single_window_start = 0
 
     tracks = _tracks_from(segmentation_2d, params)
@@ -161,7 +161,7 @@ def test_solve_single_window_points():
     params = SolverParams()
     params.appear_cost = None
     params.iou_cost = None  # points graphs have no iou edge attribute
-    params.window_size = 2
+    params.single_window_size = 2
     params.single_window_start = 1
 
     tracks = _tracks_from(points, params)
@@ -179,9 +179,8 @@ def test_solve_single_window_invalid_start(segmentation_3d):
 
     params = SolverParams()
     params.appear_cost = None
-    params.window_size = 3
+    params.single_window_size = 3
     params.single_window_start = 100  # Beyond data range (5 frames)
 
-    tracks = _tracks_from(segmentation_3d, params)
     with pytest.raises(ValueError, match="beyond last frame"):
-        solve(tracks, params)
+        _tracks_from(segmentation_3d, params)

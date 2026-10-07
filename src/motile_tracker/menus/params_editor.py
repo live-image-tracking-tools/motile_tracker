@@ -170,16 +170,20 @@ class SolverParamsEditor(QWidget):
                 "distance_cost",
                 "iou_cost",
             ],
-            "chunking": [
+            "chunked_solving": [
                 "window_size",
                 "overlap_size",
+            ],
+            "single_window": [
                 "single_window_start",
+                "single_window_size",
             ],
         }
         self.iou_row: OptionalEditableParam
         self.window_size_row: OptionalEditableParam
         self.overlap_size_row: OptionalEditableParam
         self.single_window_start_row: OptionalEditableParam
+        self.single_window_size_row: OptionalEditableParam
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -193,12 +197,16 @@ class SolverParamsEditor(QWidget):
             self._params_group("Attribute Weights", "attribute_costs", negative=True)
         )
         main_layout.addWidget(
-            self._params_group("Chunked Solving", "chunking", negative=False)
+            self._params_group("Chunked Solving", "chunked_solving", negative=False)
+        )
+        main_layout.addWidget(
+            self._params_group("Single Window", "single_window", negative=False)
         )
         self.setLayout(main_layout)
 
-        # Set up cross-field validation for chunking parameters
+        # Set up cross-field validation for chunked solving and single window
         self._setup_chunking_constraints()
+        self._setup_single_window_constraints()
 
     def _params_group(self, title: str, param_category: str, negative: bool) -> QWidget:
         widget = QGroupBox(title)
@@ -225,16 +233,14 @@ class SolverParamsEditor(QWidget):
                 self.overlap_size_row = param_row
             elif param_name == "single_window_start":
                 self.single_window_start_row = param_row
+            elif param_name == "single_window_size":
+                self.single_window_size_row = param_row
             layout.addWidget(param_row)
         widget.setLayout(layout)
         return widget
 
     def _setup_chunking_constraints(self) -> None:
-        """Set up validation constraints for chunking fields."""
-        # Track which chunking mode was last used (overlap=chunked, single_window_start=single)
-        # Default to overlap (chunked solving)
-        self._last_chunking_mode = "overlap"
-
+        """Set up validation constraints for chunked solving fields."""
         # Set window_size minimum to 2
         self.window_size_row.param_value.setMinimum(2)
 
@@ -246,19 +252,12 @@ class SolverParamsEditor(QWidget):
             self._update_overlap_constraints
         )
 
-        # When window_size checkbox toggles, enable/disable dependent fields
-        self.window_size_row.param_label.toggled.connect(self._toggle_chunking_fields)
+        # When window_size checkbox toggles, enable/disable overlap_size
+        self.window_size_row.param_label.toggled.connect(self.overlap_size_row.setEnabled)
 
-        # Mutual exclusion: overlap_size and single_window_start
-        self.overlap_size_row.param_label.toggled.connect(self._on_overlap_toggled)
-        self.single_window_start_row.param_label.toggled.connect(
-            self._on_single_window_toggled
-        )
-
-        # Initialize state: disable dependent fields if window_size is unchecked
+        # Initialize state: disable overlap_size if window_size is unchecked
         if not self.window_size_row.param_label.isChecked():
             self.overlap_size_row.setEnabled(False)
-            self.single_window_start_row.setEnabled(False)
 
     def _update_overlap_constraints(self, window_size: int | None) -> None:
         """Update overlap_size spinbox maximum based on window_size."""
@@ -268,32 +267,19 @@ class SolverParamsEditor(QWidget):
             if self.overlap_size_row.param_value.value() >= window_size:
                 self.overlap_size_row.param_value.setValue(window_size - 1)
 
-    def _toggle_chunking_fields(self, enabled: bool) -> None:
-        """Enable/disable overlap_size and single_window_start based on window_size."""
-        self.overlap_size_row.setEnabled(enabled)
-        self.single_window_start_row.setEnabled(enabled)
-        if enabled:
-            # Auto-check the last used chunking mode
-            if self._last_chunking_mode == "overlap":
-                self.overlap_size_row.param_label.setChecked(True)
-            else:
-                self.single_window_start_row.param_label.setChecked(True)
-        else:
-            # Uncheck dependent fields so they emit None
-            self.overlap_size_row.param_label.setChecked(False)
-            self.single_window_start_row.param_label.setChecked(False)
+    def _setup_single_window_constraints(self) -> None:
+        """Set up validation constraints for single window fields."""
+        # Set single_window_size minimum to 2
+        self.single_window_size_row.param_value.setMinimum(2)
 
-    def _on_overlap_toggled(self, checked: bool) -> None:
-        """When overlap_size is checked, uncheck single_window_start and remember choice."""
-        if checked:
-            self._last_chunking_mode = "overlap"
-            self.single_window_start_row.param_label.setChecked(False)
+        # When single_window_start checkbox toggles, enable/disable single_window_size
+        self.single_window_start_row.param_label.toggled.connect(
+            self.single_window_size_row.setEnabled
+        )
 
-    def _on_single_window_toggled(self, checked: bool) -> None:
-        """When single_window_start is checked, uncheck overlap_size and remember choice."""
-        if checked:
-            self._last_chunking_mode = "single_window"
-            self.overlap_size_row.param_label.setChecked(False)
+        # Initialize state: disable single_window_size if single_window_start is unchecked
+        if not self.single_window_start_row.param_label.isChecked():
+            self.single_window_size_row.setEnabled(False)
 
     def set_max_frames(self, max_frame: int) -> None:
         """Set the maximum frame index for single_window_start.

@@ -131,11 +131,13 @@ def test_solver_params_editor_initialization(qapp):
     assert "hyperparams" in editor.param_categories
     assert "constant_costs" in editor.param_categories
     assert "attribute_costs" in editor.param_categories
-    assert "chunking" in editor.param_categories
+    assert "chunked_solving" in editor.param_categories
+    assert "single_window" in editor.param_categories
     assert hasattr(editor, "iou_row")
     assert hasattr(editor, "window_size_row")
     assert hasattr(editor, "overlap_size_row")
     assert hasattr(editor, "single_window_start_row")
+    assert hasattr(editor, "single_window_size_row")
 
     # Test 2: param_categories contains correct parameter names
     assert "max_edge_distance" in editor.param_categories["hyperparams"]
@@ -145,13 +147,14 @@ def test_solver_params_editor_initialization(qapp):
     assert "division_cost" in editor.param_categories["constant_costs"]
     assert "distance_cost" in editor.param_categories["attribute_costs"]
     assert "iou_cost" in editor.param_categories["attribute_costs"]
-    assert "window_size" in editor.param_categories["chunking"]
-    assert "overlap_size" in editor.param_categories["chunking"]
-    assert "single_window_start" in editor.param_categories["chunking"]
+    assert "window_size" in editor.param_categories["chunked_solving"]
+    assert "overlap_size" in editor.param_categories["chunked_solving"]
+    assert "single_window_start" in editor.param_categories["single_window"]
+    assert "single_window_size" in editor.param_categories["single_window"]
 
 
 def test_chunking_constraints(qapp):
-    """Test chunking parameter validation constraints."""
+    """Test chunked solving parameter validation constraints."""
     # Test 1: window_size has minimum value of 2
     editor = SolverParamsEditor()
     assert editor.window_size_row.param_value.minimum() == 2
@@ -170,45 +173,37 @@ def test_chunking_constraints(qapp):
     editor.window_size_row.param_value.setValue(5)
     assert editor.overlap_size_row.param_value.value() == 4
 
-    # Test 5: overlap_size and single_window_start disabled when window_size unchecked
+    # Test 5: overlap_size disabled when window_size unchecked
     editor.window_size_row.param_label.setChecked(False)
     assert not editor.overlap_size_row.isEnabled()
-    assert not editor.single_window_start_row.isEnabled()
 
-    # Test 6: overlap_size and single_window_start enabled when window_size checked
+    # Test 6: overlap_size enabled when window_size checked
     editor.window_size_row.param_label.setChecked(True)
     assert editor.overlap_size_row.isEnabled()
-    assert editor.single_window_start_row.isEnabled()
 
-    # Test 7: overlap_size and single_window_start are mutually exclusive
-    editor.overlap_size_row.param_label.setChecked(True)
-    assert editor.overlap_size_row.param_label.isChecked()
+
+def test_single_window_constraints(qapp):
+    """Test single window parameter validation constraints, independent of
+    chunked solving."""
+    editor = SolverParamsEditor()
+
+    # Test 1: single_window_size has minimum value of 2
+    assert editor.single_window_size_row.param_value.minimum() == 2
+
+    # Test 2: single_window_size disabled when single_window_start unchecked
+    editor.single_window_start_row.param_label.setChecked(False)
+    assert not editor.single_window_size_row.isEnabled()
+
+    # Test 3: single_window_size enabled when single_window_start checked
     editor.single_window_start_row.param_label.setChecked(True)
-    assert not editor.overlap_size_row.param_label.isChecked()
-    assert editor.single_window_start_row.param_label.isChecked()
+    assert editor.single_window_size_row.isEnabled()
+
+    # Test 4: single window and chunked solving are independent, not mutually exclusive
+    editor.window_size_row.param_label.setChecked(True)
     editor.overlap_size_row.param_label.setChecked(True)
+    editor.single_window_start_row.param_label.setChecked(True)
     assert editor.overlap_size_row.param_label.isChecked()
-    assert not editor.single_window_start_row.param_label.isChecked()
-
-    # Test 8: last chunking mode is remembered when toggling window_size
-    editor2 = SolverParamsEditor()
-    editor2.window_size_row.param_label.setChecked(True)
-    editor2.overlap_size_row.param_label.setChecked(True)
-    assert editor2._last_chunking_mode == "overlap"
-    editor2.window_size_row.param_label.setChecked(False)
-    editor2.window_size_row.param_label.setChecked(True)
-    assert editor2.overlap_size_row.param_label.isChecked()
-    assert not editor2.single_window_start_row.param_label.isChecked()
-
-    # Test 9: single_window mode is remembered when toggling window_size
-    editor3 = SolverParamsEditor()
-    editor3.window_size_row.param_label.setChecked(True)
-    editor3.single_window_start_row.param_label.setChecked(True)
-    assert editor3._last_chunking_mode == "single_window"
-    editor3.window_size_row.param_label.setChecked(False)
-    editor3.window_size_row.param_label.setChecked(True)
-    assert editor3.single_window_start_row.param_label.isChecked()
-    assert not editor3.overlap_size_row.param_label.isChecked()
+    assert editor.single_window_start_row.param_label.isChecked()
 
 
 def test_set_max_frames(qapp):

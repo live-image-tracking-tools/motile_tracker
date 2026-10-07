@@ -69,10 +69,18 @@ be pinned when solving the next window. Must be less than window_size.""",
     single_window_start: int | None = Field(
         None,
         title="Single Window Start",
-        description=r"""If set along with window_size, only solve a single window starting at this
-frame index. Useful for interactively testing parameters on a small portion of the data
-before running on the full dataset.""",
+        description=r"""If set along with single_window_size, only solve a single window starting
+at this frame index. Useful for interactively testing parameters on a small portion of
+the data before running on the full dataset.""",
         json_schema_extra={"ui_default": 0},
+    )
+    single_window_size: int | None = Field(
+        None,
+        title="Single Window Size",
+        description=r"""Number of time frames in the single window started at
+single_window_start. Independent of window_size, which is the chunk size used for
+sliding-window/chunked solving over the whole dataset.""",
+        json_schema_extra={"ui_default": 50},
     )
 
     @field_validator("window_size")
@@ -87,4 +95,11 @@ before running on the full dataset.""",
     def overlap_size_must_be_positive(cls, v: int | None) -> int | None:
         if v is not None and v < 1:
             raise ValueError("overlap_size must be at least 1")
+        return v
+
+    @field_validator("single_window_size")
+    @classmethod
+    def single_window_size_must_be_at_least_two(cls, v: int | None) -> int | None:
+        if v is not None and v < 2:
+            raise ValueError("single_window_size must be at least 2")
         return v
