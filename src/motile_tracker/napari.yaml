@@ -7,30 +7,11 @@ categories: ["Utilities"]
 contributions:
   commands:
     - id: motile-tracker.tracking
-      python_name: motile_tracker.menus.motile_widget:MotileWidget
+      python_name: motile_tracker.menus.registration:MotileTrackingWidget
       title: "Open Tracking widget"
     - id: motile-tracker.solve
       python_name: motile_tracker.backend.solve:solve
       title: "Run motile tracking (backend only)"
-    - id: motile-tracker.Fluo_N2DL_HeLa
-      python_name: motile_tracker.example_data:Fluo_N2DL_HeLa
-      title: "Load Fluo-N2DL-HeLa tracking dataset"
-    - id: motile-tracker.Fluo_N2DL_HeLa_crop
-      python_name: motile_tracker.example_data:Fluo_N2DL_HeLa_crop
-      title: "Load Fluo-N2DL-HeLa tracking dataset (crop)"
-    - id: motile-tracker.Mouse_Embryo_Membrane
-      python_name: motile_tracker.example_data:Mouse_Embryo_Membrane
-      title: "Load Mouse Embryo_Membrane tracking dataset"
   widgets:
     - command: motile-tracker.tracking
       display_name: Widget - Tracking
-  sample_data:
-    - command: motile-tracker.Fluo_N2DL_HeLa
-      key: "Fluo-N2DL-HeLa"
-      display_name: "Fluo-N2DL-HeLa (2D)"
-    - command: motile-tracker.Fluo_N2DL_HeLa_crop
-      key: "Fluo-N2DL-HeLa-crop"
-      display_name: "Fluo-N2DL-HeLa crop (2D)"
-    - command: motile-tracker.Mouse_Embryo_Membrane
-      key: "Mouse_Embryo_Membrane"
-      display_name: "Mouse Embryo Membranes (3D)"

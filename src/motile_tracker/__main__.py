@@ -5,7 +5,9 @@ import napari
 
 from napari_track_edit.application_menus.main_app import StartupWidget
 
-from motile_tracker.menus.motile_widget import MotileWidget
+# Importing this module registers the Motile tab with napari-track-edit's
+# TrackingWidget as a side effect.
+import motile_tracker.menus.registration  # noqa: F401
 
 
 def main():
@@ -20,7 +22,6 @@ def main():
 
     viewer = napari.Viewer()
     StartupWidget(viewer, mode=args.mode)
-    viewer.window.add_dock_widget(MotileWidget(viewer), name="Tracking")
 
     napari.run()
 
