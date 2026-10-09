@@ -32,7 +32,7 @@ classifiers = [
 dependencies =[
     "napari>=0.6.2,<0.8.0",
     "napari-track-edit",
-    "funtracks>=2.1.0-a3,<3",
+    "funtracks[hoct]>=2.2.0,<3",
     "appdirs>=1,<2",
     "numpy>=2,<3",
     "magicgui>=0.10.1",
@@ -103,6 +103,8 @@ conflicts = [
 # Temporary git dependency during the motile_tracker/napari-track-edit split;
 # switch to a released version once napari-track-edit is published.
 napari-track-edit = { git = "https://github.com/live-image-tracking-tools/napari-track-edit", branch = "remove_motile" }
+funtracks = { git = "https://github.com/funkelab/funtracks", rev="75dcd7b3346620ba4e7e3c45f82e727b0415cad5" }
+hoct = { git = "https://github.com/funkelab/hoct", rev="ef164e1c3cdcedf00ac3235581bca15a53a4b652" }
 
 [tool.pytest.ini_options]
 # Benchmarks are slow and run in a dedicated CI job; exclude them from the normal
