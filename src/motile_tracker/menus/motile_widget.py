@@ -218,11 +218,6 @@ class MotileWidget(QWidget):
                     offset=0,
                 )
 
-        if tracks.segmentation is not None:
-            # recompute=False: area values are already on the graph nodes
-            # because compute_graph_from_seg computes area during node extraction.
-            tracks.enable_features(["area"], recompute=False)
-
         if tracks.graph_solution.num_nodes() == 0:
             show_warning(
                 "No tracks found - try making your edge selection value more negative"
