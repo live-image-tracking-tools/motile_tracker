@@ -79,6 +79,7 @@ def graphview_to_motile_dicts(
 
     return nodes, edges
 
+
 def _reset_solution(tracks):
     graph = tracks.graph_full
     all_node_ids = graph.node_ids()
@@ -93,6 +94,7 @@ def _reset_solution(tracks):
             edge_ids=all_edge_ids,
             attrs={"solution": False, PIN_ATTR: PIN_UNSET},
         )
+
 
 def _get_windows(
     tiling_params: TilingParams, total_time_points: int
@@ -132,6 +134,7 @@ def _get_windows(
         windows.append((start, end))
         start += window_size - overlap_size
     return windows, True
+
 
 def solve(
     tracks: Tracks,
@@ -239,6 +242,7 @@ def solve(
 
     return tracks
 
+
 class TernaryPin(Constraint):
     """Like motile's Pin, but treats PIN_UNSET as unconstrained.
 
@@ -342,7 +346,7 @@ def construct_solver(
 
     node_attr_keys = set(cand_graph.node_attr_keys())
     edge_attr_keys = set(cand_graph.edge_attr_keys())
-    for attribute, weight in solver_params.attribute_weights.items():
+    for attribute, weight in solver_params.feature_weights.items():
         is_node_attr = attribute in node_attr_keys
         is_edge_attr = attribute in edge_attr_keys
         if is_node_attr and is_edge_attr:

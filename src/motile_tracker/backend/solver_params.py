@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from funtracks.features import Feature
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 # Node/edge feature keys that are never offered as selectable solving weights
 # (position is handled by distance_cost, not a generic attribute weight).
-_RESERVED_FEATURE_KEYS = frozenset({"t", "pos", "solution", "tracklet_id", "lineage_id"})
+_RESERVED_FEATURE_KEYS = frozenset(
+    {"t", "pos", "solution", "tracklet_id", "lineage_id"}
+)
 
 
 class CandidateGraphParams(BaseModel):
@@ -124,29 +127,36 @@ If this cost is higher than the appear cost, tracks will likely never divide."""
         description=r"""Use the distance between objects as a feature for selecting edges.
 The value is multiplied by the edge distance to create a cost for selecting that edge.""",
     )
-    attribute_weights: dict[str, float] = Field(
+    feature_weights: dict[str, float] = Field(
         default_factory=dict,
-        title="Attribute Weights",
-        description=r"""Weights for arbitrary node/edge features computed on the tracks
-(e.g. iou, or anything else added via the Features menu). Each entry adds an
-EdgeSelection cost: the feature's value is multiplied by the weight to produce a cost
-for selecting that edge. Recommended to be negative for features where a bigger value
-is a better match (e.g. IoU), positive otherwise.""",
+        title="Feature Weights",
+        validation_alias=AliasChoices("feature_weights", "attribute_weights"),
+        description=r"""Weights for arbitrary node/edge features computed on
+the tracks. Each entry adds a node or edge selection cost: the feature's value
+is multiplied by the weight to produce a cost for selecting that node or edge.
+Recommended to be negative for features where a bigger value is a better match
+(e.g. IoU), positive otherwise.""",
     )
 
     @classmethod
-    def available_attribute_keys(cls, tracks) -> list[str]:
-        """List the node/edge feature keys on `tracks` that can be used as
-        attribute_weights entries.
-
-        Args:
-            tracks: A funtracks Tracks (or subclass) instance to inspect.
-
-        Returns:
-            list[str]: Feature keys present on tracks.graph_solution, excluding
-                internal/reserved keys (time, position, solution, track/lineage
-                ids) that are not meaningful as a generic solving weight.
-        """
-        graph = tracks.graph_solution
-        keys = set(graph.node_attr_keys()) | set(graph.edge_attr_keys())
-        return sorted(keys - _RESERVED_FEATURE_KEYS)
+    def available_features(cls, tracks) -> dict[str, Feature]:
+        """Return available scalar numeric features that can be used as weights."""
+        if tracks is None:
+            return {}
+        features = tracks.get_available_features()
+        position = tracks.features.position_key
+        position_keys = position if isinstance(position, list) else [position]
+        reserved = _RESERVED_FEATURE_KEYS | {
+            tracks.features.time_key,
+            tracks.features.tracklet_key,
+            tracks.features.lineage_key,
+            *position_keys,
+        }
+        return {
+            key: feature
+            for key, feature in features.items()
+            if key not in reserved
+            and feature["value_type"] in {"int", "float", "bool"}
+            and feature.get("num_values", 1) == 1
+            and feature["feature_type"] in ("node", "edge")
+        }

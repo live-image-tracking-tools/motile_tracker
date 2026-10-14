@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import pyqtgraph as pg
+from napari.layers import Image
+from napari.utils.notifications import show_warning
 from napari_track_edit.data_views.views_coordinator.tracks_viewer import TracksViewer
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QGroupBox,
+    QInputDialog,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -14,7 +17,7 @@ from superqt import QCollapsible, ensure_main_thread
 
 from motile_tracker.backend import MotileGraph, get_solver_name
 
-from .params_editor import AttributeWeightsEditor, SolverParamsEditor, TilingParamsEditor
+from .params_editor import FeatureWeightsEditor, SolverParamsEditor, TilingParamsEditor
 
 
 class MotileParamsWidget(QGroupBox):
@@ -36,9 +39,9 @@ class MotileParamsWidget(QGroupBox):
 
         self.stats_label = QLabel("")
         self.solver_params_widget = SolverParamsEditor()
-        self.attribute_weights_widget = AttributeWeightsEditor()
-        self.attribute_weights_widget.refresh_requested.connect(
-            self._refresh_attribute_weights
+        self.feature_weights_widget = FeatureWeightsEditor(self._enable_feature)
+        self.feature_weights_widget.features_changed.connect(
+            self._refresh_feature_views
         )
         self.tiling_params_widget = TilingParamsEditor()
         self.solver_label = QLabel("")
@@ -51,7 +54,7 @@ class MotileParamsWidget(QGroupBox):
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.stats_label)
         main_layout.addWidget(self.solver_params_widget)
-        main_layout.addWidget(self.attribute_weights_widget)
+        main_layout.addWidget(self.feature_weights_widget)
         main_layout.addWidget(self.tiling_params_widget)
         main_layout.addWidget(run_btn)
         main_layout.addWidget(self._progress_widget())
@@ -59,15 +62,46 @@ class MotileParamsWidget(QGroupBox):
 
         self.update_stats()
 
-    def _refresh_attribute_weights(self) -> None:
-        """Rebuild the attribute weight rows from the currently selected
-        tracks' node/edge features."""
-        self.attribute_weights_widget.refresh_from_tracks(self.tracks_viewer.tracks)
+    def _enable_feature(self, key: str) -> bool:
+        """Configure extra inputs when needed, then compute the selected feature."""
+        tracks = self.tracks_viewer.tracks
+        if key == "intensity":
+            images = tracks.regionprops_annotator.intensity_images
+            if images is None or len(images) != 1:
+                layers = [
+                    layer
+                    for layer in self.viewer.layers
+                    if isinstance(layer, Image)
+                    and tuple(layer.data.shape) == tuple(tracks.segmentation.shape)
+                ]
+                if not layers:
+                    show_warning("No image layers match the segmentation shape")
+                    return False
+                name, accepted = QInputDialog.getItem(
+                    self,
+                    "Mean intensity",
+                    "Image layer to measure:",
+                    [layer.name for layer in layers],
+                    0,
+                    False,
+                )
+                if not accepted:
+                    return False
+                layer = next(layer for layer in layers if layer.name == name)
+                tracks.set_intensity_images([layer.data], channel_names=[layer.name])
+        tracks.enable_features([key])
+        return True
+
+    def _refresh_feature_views(self) -> None:
+        """Notify every view after changing features on the shared tracks."""
+        self.tracks_viewer.update_track_df(initialization=False, refresh_view=False)
+        self.tracks_viewer.tracks_updated.emit(False)
 
     def update_stats(self, *_) -> None:
         """Refresh the stats label from the currently selected tracks, and
         hide this whole widget when nothing is selected."""
         tracks = self.tracks_viewer.tracks
+        self.feature_weights_widget.refresh_from_tracks(tracks)
         if tracks is None:
             self.setVisible(False)
             return
@@ -83,15 +117,15 @@ class MotileParamsWidget(QGroupBox):
     def emit_run_solver(self) -> None:
         """Emit run_solver with a copy of the current solver and tiling params.
 
-        attribute_weights lives on a separate editor instance (so it can be
+        feature_weights lives on a separate editor instance (so it can be
         rebuilt independently of the rest of SolverParams), so it is merged in
         here rather than living on self.solver_params_widget.solver_params.
         """
-        solver_params = self.solver_params_widget.solver_params.copy()
-        solver_params.attribute_weights = dict(
-            self.attribute_weights_widget.solver_params.attribute_weights
+        solver_params = self.solver_params_widget.solver_params.model_copy()
+        solver_params.feature_weights = dict(
+            self.feature_weights_widget.solver_params.feature_weights
         )
-        tiling_params = self.tiling_params_widget.tiling_params.copy()
+        tiling_params = self.tiling_params_widget.tiling_params.model_copy()
         self.run_solver.emit(solver_params, tiling_params)
 
     def _progress_widget(self) -> QWidget:

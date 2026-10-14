@@ -8,7 +8,6 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -304,20 +303,20 @@ class SolverParamsEditor(QWidget):
         return widget
 
 
-class AttributeWeightRow(QWidget):
-    """A single labeled weight row for one entry of SolverParams.attribute_weights."""
+class FeatureWeightRow(QWidget):
+    """A single labeled weight row for one entry of SolverParams.feature_weights."""
 
-    valueChanged = Signal(str, object)  # attribute key, new weight (float or None)
+    valueChanged = Signal(str, object)  # feature key, new weight (float or None)
 
-    def __init__(self, attribute: str, weight: float | None):
+    def __init__(self, feature_key: str, display_name: str, weight: float | None):
         super().__init__()
-        self.attribute = attribute
-        self.param_label = QCheckBox(attribute)
+        self.feature_key = feature_key
+        self.param_label = QCheckBox(display_name)
         self.param_label.setMinimumHeight(32)
         self.param_value = EditableParamValue(float, negative=True)
         self.param_label.toggled.connect(self._on_toggled)
         self.param_value.valueChanged.connect(
-            lambda v: self.valueChanged.emit(self.attribute, v)
+            lambda v: self.valueChanged.emit(self.feature_key, v)
         )
 
         layout = QHBoxLayout()
@@ -347,89 +346,109 @@ class AttributeWeightRow(QWidget):
     def _on_toggled(self, checked: bool) -> None:
         self.param_value.setEnabled(checked)
         value = self.param_value.get_value() if checked else None
-        self.valueChanged.emit(self.attribute, value)
+        self.valueChanged.emit(self.feature_key, value)
 
 
-class AttributeWeightsEditor(QWidget):
-    """Widget for editing SolverParams.attribute_weights: a dynamic set of
-    weight rows, one per node/edge feature available on the currently
-    selected tracks.
+class FeatureWeightsEditor(QWidget):
+    """Select optional features and their solver weights on the shared tracks.
 
-    Does not know about TracksViewer directly: the caller passes in the
-    Tracks to inspect via refresh_from_tracks (or None, to just clear rows).
+    The optional enable_feature callback configures measurements needing extra input,
+    such as the image layer for mean intensity, and returns whether enabling succeeded.
     """
 
     new_params = Signal(SolverParams)
-    refresh_requested = Signal()
+    features_changed = Signal()
 
-    def __init__(self):
+    def __init__(self, enable_feature=None):
         super().__init__()
         self.solver_params = SolverParams()
-        self.rows: dict[str, AttributeWeightRow] = {}
+        self.rows: dict[str, FeatureWeightRow] = {}
+        self._tracks = None
+        self._enable_feature = enable_feature
+        self._changing_feature = False
 
-        self.group = QGroupBox("Attribute Weights")
+        self.group = QGroupBox("Feature Weights")
         self.rows_layout = QVBoxLayout()
         self.rows_layout.setSpacing(0)
         self.group.setLayout(self.rows_layout)
 
-        refresh_btn = QPushButton("Refresh based on current features")
-        refresh_btn.setToolTip(
-            "Re-scan the currently selected tracks for node/edge features and "
-            "show a weight row for each one."
-        )
-        refresh_btn.clicked.connect(self._emit_refresh_request)
-
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(self.group)
-        main_layout.addWidget(refresh_btn)
         self.setLayout(main_layout)
 
         self.new_params.connect(self._on_new_params)
 
-    def _emit_refresh_request(self) -> None:
-        self.refresh_requested.emit()
-
     def refresh_from_tracks(self, tracks) -> None:
-        """Rebuild the weight rows from the feature keys available on
-        `tracks` (or clear all rows if `tracks` is None).
-
-        Existing weights for keys that are still available are preserved;
-        weights for keys no longer available are dropped.
-        """
-        keys = SolverParams.available_attribute_keys(tracks) if tracks is not None else []
-        self._set_keys(keys)
-
-    def _set_keys(self, keys: list[str]) -> None:
-        kept_weights = {
-            key: self.solver_params.attribute_weights[key]
-            for key in keys
-            if key in self.solver_params.attribute_weights
+        """Read available features and their enabled state without computing them."""
+        if self._changing_feature:
+            return
+        if tracks is not self._tracks:
+            self.solver_params.feature_weights = {}
+        self._tracks = tracks
+        features = SolverParams.available_features(tracks)
+        self.solver_params.feature_weights = {
+            key: self.solver_params.feature_weights.get(key, 0.0)
+            for key in features
+            if key in tracks.features
         }
-        self.solver_params.attribute_weights = kept_weights
 
         for row in self.rows.values():
             self.rows_layout.removeWidget(row)
             row.deleteLater()
         self.rows = {}
 
-        for key in keys:
-            row = AttributeWeightRow(key, kept_weights.get(key))
+        for key, feature in features.items():
+            # Intensity has one shared checkbox name in the Features widget.
+            name = (
+                "Mean intensity"
+                if key == "intensity"
+                else feature.get("display_name", key)
+            )
+            row = FeatureWeightRow(
+                key, name, self.solver_params.feature_weights.get(key)
+            )
             row.valueChanged.connect(self._on_row_value_changed)
             self.rows_layout.addWidget(row)
             self.rows[key] = row
 
-    def _on_row_value_changed(self, attribute: str, value: float | None) -> None:
-        weights = dict(self.solver_params.attribute_weights)
-        if value is None:
-            weights.pop(attribute, None)
-        else:
-            weights[attribute] = value
-        self.solver_params.attribute_weights = weights
+    def _on_row_value_changed(self, key: str, value: float | None) -> None:
+        tracks = self._tracks
+        if tracks is None:
+            return
+        was_enabled = key in tracks.features
+        enabled = value is not None
+        self._changing_feature = True
+        try:
+            if enabled and not was_enabled:
+                if self._enable_feature is None:
+                    tracks.enable_features([key])
+                elif not self._enable_feature(key):
+                    self.rows[key].set_weight(None)
+                    return
+            elif not enabled and was_enabled:
+                tracks.disable_features([key])
+
+            weights = dict(self.solver_params.feature_weights)
+            if enabled:
+                weights[key] = value
+            else:
+                weights.pop(key, None)
+            self.solver_params.feature_weights = weights
+            if enabled != was_enabled:
+                self.features_changed.emit()
+        except Exception:
+            # Failed inference must not leave a feature registered as computed.
+            if not was_enabled and key in tracks.features:
+                tracks.disable_features([key])
+            self.rows[key].set_weight(self.solver_params.feature_weights.get(key))
+            raise
+        finally:
+            self._changing_feature = False
 
     def _on_new_params(self, params: SolverParams) -> None:
         self.solver_params = params
-        self._set_keys(list(self.rows.keys()))
+        self.refresh_from_tracks(self._tracks)
 
 
 class TilingParamsEditor(QWidget):
@@ -500,7 +519,9 @@ class TilingParamsEditor(QWidget):
         )
 
         # When window_size checkbox toggles, enable/disable overlap_size
-        self.window_size_row.param_label.toggled.connect(self.overlap_size_row.setEnabled)
+        self.window_size_row.param_label.toggled.connect(
+            self.overlap_size_row.setEnabled
+        )
 
         # Initialize state: disable overlap_size if window_size is unchecked
         if not self.window_size_row.param_label.isChecked():
