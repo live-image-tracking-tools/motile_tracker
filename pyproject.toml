@@ -102,8 +102,8 @@ conflicts = [
 [tool.uv.sources]
 # Temporary git dependency during the motile_tracker/napari-track-edit split;
 # switch to a released version once napari-track-edit is published.
-napari-track-edit = { git = "https://github.com/live-image-tracking-tools/napari-track-edit", branch = "remove_motile" }
-funtracks = { git = "https://github.com/funkelab/funtracks", rev="75dcd7b3346620ba4e7e3c45f82e727b0415cad5" }
+napari-track-edit = { git = "https://github.com/live-image-tracking-tools/napari-track-edit", rev="a40874e4f6b27a72137d491a85b67ba6aae835c4" }
+funtracks = { git = "https://github.com/funkelab/funtracks", rev="d22055c385c8c9c810d5a3965b8f44835a8ae295" }
 hoct = { git = "https://github.com/funkelab/hoct", rev="ef164e1c3cdcedf00ac3235581bca15a53a4b652" }
 
 [tool.pytest.ini_options]
