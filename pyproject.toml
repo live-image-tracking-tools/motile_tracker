@@ -32,7 +32,7 @@ classifiers = [
 dependencies =[
     "napari>=0.6.2,<0.8.0",
     "napari-track-edit",
-    "funtracks[hoct]>=2.2.0,<3",
+    "funtracks>=2.2.0,<3",
     "appdirs>=1,<2",
     "numpy>=2,<3",
     "magicgui>=0.10.1",
@@ -52,6 +52,7 @@ numba = ["numba>=0.62.1"]
 gurobi = ["gurobipy"]
 gurobi12 = ["gurobipy>=12,<13"]
 gurobi13 = ["gurobipy>=13,<14"]
+hoct = ["hoct[scoring]"]
 all = [
     "pyqt6>=6.7,<7",
 ]
@@ -103,7 +104,7 @@ conflicts = [
 # Temporary git dependency during the motile_tracker/napari-track-edit split;
 # switch to a released version once napari-track-edit is published.
 napari-track-edit = { git = "https://github.com/live-image-tracking-tools/napari-track-edit", rev="a40874e4f6b27a72137d491a85b67ba6aae835c4" }
-funtracks = { git = "https://github.com/funkelab/funtracks", rev="d22055c385c8c9c810d5a3965b8f44835a8ae295" }
+funtracks = { git = "https://github.com/funkelab/funtracks", rev="3084566e28e96ae4172c2669fe8591fa643c01a3" }
 hoct = { git = "https://github.com/funkelab/hoct", rev="ef164e1c3cdcedf00ac3235581bca15a53a4b652" }
 
 [tool.pytest.ini_options]

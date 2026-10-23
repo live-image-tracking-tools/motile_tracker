@@ -6,6 +6,8 @@ from pathlib import Path
 import tracksdata as td
 from funtracks.data_model import Tracks
 
+from motile_tracker.annotators.hoct_annotator import HoctAnnotator
+
 from .solver_params import CandidateGraphParams, SolverParams, TilingParams
 
 PARAMS_FILENAME = "solver_params.json"
@@ -52,6 +54,8 @@ class MotileGraph(Tracks):
         self.tiling_params = tiling_params
         self.gaps = gaps
         self.status = status
+
+        self.register_annotator(HoctAnnotator(self, retrain_every=1))
 
     def save_metadata(self, path: str | Path) -> Path:
         """Save the run's metadata (candidate graph params, solver params,
